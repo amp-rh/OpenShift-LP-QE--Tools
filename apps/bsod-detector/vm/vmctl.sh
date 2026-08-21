@@ -15,27 +15,26 @@
 #   vmctl.sh ip            # best-effort guest IP (needs guest agent)
 #
 # Env overrides: VM_NAME (default bsod-test), SNAP_NAME (default clean-baseline).
-set -euxo pipefail
-shopt -s inherit_errexit
+set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 VM_NAME="${VM_NAME:-bsod-test}"
 SNAP_NAME="${SNAP_NAME:-clean-baseline}"
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-XML="$HERE/bsod-test.domain.xml"
+typeset here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+typeset xml="$here/bsod-test.domain.xml"
 
-die() { echo "vmctl: $*" >&2; exit 1; }
-have() { command -v "$1" >/dev/null 2>&1; }
+function Die () { echo "vmctl: $*" >&2; exit 1; }
+function Have () { command -v "$1" >/dev/null 2>&1; }
 
-have virsh || die "virsh not found; install libvirt-client"
+Have virsh || Die "virsh not found; install libvirt-client"
 
-cmd="${1:-status}"; shift || true
+typeset cmd="${1:-status}"; shift || true
 
 case "$cmd" in
   define)
-    [[ -f "$XML" ]] || die "missing $XML"
-    virsh define "$XML"
-    echo "defined $VM_NAME from $XML"
+    [[ -f "$xml" ]] || Die "missing $xml"
+    virsh define "$xml"
+    : "defined $VM_NAME from $xml"
     ;;
   snapshot)
     # Internal qcow2 snapshot including RAM if running, disk-only if off.
@@ -45,7 +44,7 @@ case "$cmd" in
     ;;
   revert)
     virsh snapshot-revert "$VM_NAME" "$SNAP_NAME" --running
-    echo "reverted $VM_NAME to $SNAP_NAME"
+    : "reverted $VM_NAME to $SNAP_NAME"
     ;;
   start)   virsh start "$VM_NAME" ;;
   stop)    virsh shutdown "$VM_NAME" ;;      # graceful ACPI
@@ -55,6 +54,6 @@ case "$cmd" in
   list)    virsh list --all ;;
   ip)      virsh domifaddr "$VM_NAME" --source agent 2>/dev/null \
              || virsh domifaddr "$VM_NAME" 2>/dev/null \
-             || die "no IP (guest agent not responding?)" ;;
-  *) die "unknown command: $cmd (see header for usage)" ;;
+             || Die "no IP (guest agent not responding?)" ;;
+  *) Die "unknown command: $cmd (see header for usage)" ;;
 esac

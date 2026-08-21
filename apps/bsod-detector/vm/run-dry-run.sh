@@ -16,38 +16,37 @@
 #
 # Defaults: code=0x19 (BAD_POOL_HEADER), revert=yes,
 #           out=<repo>/output/dryrun-<timestamp>
-set -euxo pipefail
-shopt -s inherit_errexit
+set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "$HERE/.." && pwd)"
+typeset here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+typeset repo; repo="$(cd "$here/.." && pwd)"
 VM_NAME="${VM_NAME:-bsod-test}"
-GSSH="$HERE/guest-ssh.sh"
+typeset gssh="$here/guest-ssh.sh"
 SNAPSHOT="${SNAPSHOT:-crashme-installed}"
 
-CODE="0x19"
-REVERT=1
-OUT="$REPO/output/dryrun-$(date +%Y%m%d-%H%M%S)"
-GUEST_SCRIPTS='C:/bsod-detector/scripts'
+typeset code="0x19"
+typeset revert=1
+typeset out="$repo/output/dryrun-$(date +%Y%m%d-%H%M%S)"
+typeset guestScripts='C:/bsod-detector/scripts'
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --code)       CODE="$2"; shift 2 ;;
-    --no-revert)  REVERT=0; shift ;;
-    --out)        OUT="$2"; shift 2 ;;
+    --code)       code="$2"; shift 2 ;;
+    --no-revert)  revert=0; shift ;;
+    --out)        out="$2"; shift 2 ;;
     --snapshot)   SNAPSHOT="$2"; shift 2 ;;
     -h|--help)    sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "run-dry-run: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
-log() { echo "[dry-run] $*" >&2; }
+function Log () { echo "[dry-run] $*" >&2; true; }
 
-lookup_params() {
+function LookupParams () {
   python3 -c "
 import json, sys
-tm = json.load(open('$REPO/src/data/trigger-methods.json'))['codes']
+tm = json.load(open('$repo/src/data/trigger-methods.json'))['codes']
 code = sys.argv[1].upper()
 if not code.startswith('0x'):
     code = '0x' + code
@@ -57,64 +56,67 @@ if code not in tm:
     sys.exit(1)
 print(' '.join(tm[code]['parameters']))
 " "$1"
+  true
 }
 
-guest_boot_time() {
-  "$GSSH" -c '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString("o")' 2>/dev/null | tr -d '\r' | tr -d '[:space:]'
+function GuestBootTime () {
+  "$gssh" -c '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString("o")' 2>/dev/null | tr -d '\r' | tr -d '[:space:]'
+  true
 }
-wait_for_ssh() {
+
+function WaitForSsh () {
   for _ in $(seq 1 25); do
-    "$GSSH" -c '"up"' 2>/dev/null | grep -q up && return 0
+    "$gssh" -c '"up"' 2>/dev/null | grep -q up && return 0
     sleep 8
   done
   return 1
 }
 
-PARAMS=$(lookup_params "$CODE")
-CODE_NORM=$(python3 -c "c='$CODE'.upper(); print('0x'+c[2:].zfill(8) if c.startswith('0x') or c.startswith('0X') else '0x'+c.zfill(8))")
-log "code=$CODE_NORM params=$PARAMS"
+typeset params; params=$(LookupParams "$code")
+typeset codeNorm; codeNorm=$(python3 -c "c='$code'.upper(); print('0x'+c[2:].zfill(8) if c.startswith('0x') or c.startswith('0X') else '0x'+c.zfill(8))")
+Log "code=$codeNorm params=$params"
 
-if [[ "$REVERT" == 1 ]]; then
-  log "reverting $VM_NAME to $SNAPSHOT"
+if [[ "$revert" == 1 ]]; then
+  Log "reverting $VM_NAME to $SNAPSHOT"
   virsh snapshot-revert "$VM_NAME" "$SNAPSHOT"
 fi
 
 if [[ "$(virsh -q domstate "$VM_NAME")" != "running" ]]; then
-  log "starting $VM_NAME"
+  Log "starting $VM_NAME"
   virsh start "$VM_NAME" >/dev/null
 fi
 
-log "waiting for guest SSH"
-wait_for_ssh || { echo "guest never came up" >&2; exit 1; }
+Log "waiting for guest SSH"
+WaitForSsh || { echo "guest never came up" >&2; exit 1; }
 
-BEFORE="$(guest_boot_time)"
-log "pre-crash boot time: $BEFORE"
+typeset before; before="$(GuestBootTime)"
+Log "pre-crash boot time: $before"
 
-log "triggering BSOD: $CODE_NORM $PARAMS"
-"$GSSH" -c "C:\\Tools\\crashme-ctl.exe $CODE $PARAMS" 2>&1 || true
+Log "triggering BSOD: $codeNorm $params"
+"$gssh" -c "C:\\Tools\\crashme-ctl.exe $code $params" 2>&1 || true
 
-log "waiting for auto-reboot"
+Log "waiting for auto-reboot"
 sleep 25
-REBOOTED=0
+typeset rebooted=0
 for _ in $(seq 1 30); do
-  NOW="$(guest_boot_time)"
-  if [[ -n "$NOW" && "$NOW" != "$BEFORE" ]]; then REBOOTED=1; log "rebooted: $NOW"; break; fi
+  typeset now; now="$(GuestBootTime)"
+  if [[ -n "$now" && "$now" != "$before" ]]; then rebooted=1; Log "rebooted: $now"; break; fi
   sleep 10
 done
-[[ "$REBOOTED" == 1 ]] || { echo "guest did not reboot; crash may have failed" >&2; exit 1; }
+[[ "$rebooted" == 1 ]] || { echo "guest did not reboot; crash may have failed" >&2; exit 1; }
 
-log "collecting evidence -> $OUT"
-mkdir -p "$OUT"
-GUEST_OUT='C:/bsod-detector/output/dryrun-current'
-"$GSSH" -c "Remove-Item -Recurse -Force $GUEST_OUT -EA SilentlyContinue; & $GUEST_SCRIPTS/collect-guest.ps1 -OutputDir ${GUEST_OUT//\//\\}" \
-  2>/dev/null | grep -avE '^#< CLIXML|<Objs ' > "$OUT/collect-guest.json" || true
+Log "collecting evidence -> $out"
+mkdir -p "$out"
+typeset guestOut='C:/bsod-detector/output/dryrun-current'
+"$gssh" -c "Remove-Item -Recurse -Force $guestOut -EA SilentlyContinue; & $guestScripts/collect-guest.ps1 -OutputDir ${guestOut//\//\\}" \
+  2>/dev/null | grep -avE '^#< CLIXML|<Objs ' > "$out/collect-guest.json" || true
 
-IP="$(virsh -q domifaddr "$VM_NAME" | awk 'NR==1{print $4}' | cut -d/ -f1)"
-SSHOPTS=(-i "$REPO/.ssh/bsod-test" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
-scp -r "${SSHOPTS[@]}" "Administrator@$IP:${GUEST_OUT}/*" "$OUT/" 2>/dev/null || true
+typeset ip; ip="$(virsh -q domifaddr "$VM_NAME" | awk 'NR==1{print $4}' | cut -d/ -f1)"
+typeset -a sshOpts=(-i "$repo/.ssh/bsod-test" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+scp -r "${sshOpts[@]}" "Administrator@$ip:${guestOut}/*" "$out/" 2>/dev/null || true
 
-log "done. Report + artifacts in: $OUT"
-python3 - "$OUT/collect-guest.json" <<'PY' 2>/dev/null || cat "$OUT/collect-guest.json"
+Log "done. Report + artifacts in: $out"
+python3 - "$out/collect-guest.json" <<'PY' 2>/dev/null || cat "$out/collect-guest.json"
 import json, sys
 d = json.load(open(sys.argv[1]))
 c = d.get("crash", {})
