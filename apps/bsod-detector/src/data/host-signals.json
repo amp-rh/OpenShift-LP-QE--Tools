@@ -1,0 +1,64 @@
+{
+  "_comment": "Source of truth for HOST-side (Linux/KVM hypervisor) crash-correlation signals that are invisible from inside the Windows guest. vm/collect-host-signals.sh reads this file to know which kernel-log patterns to grep for and which guest VM features to extract from the domain XML.",
+  "kernelLogSignals": [
+    {
+      "id": "split-lock-trap",
+      "pattern": "split lock detection.*#AC.*(CPU\\s+\\d+/KVM/\\d+).*split_lock trap at address:\\s*(0x[0-9a-fA-F]+)",
+      "logSource": "kernel (journalctl -k / dmesg)",
+      "meaning": "Intel split-lock detection raised an #AC (Alignment Check) on a misaligned atomic that crossed a cache line, inside a KVM vCPU thread. On certain Intel platforms this is forwarded as a fatal NMI and crashes the guest (HYPERVISOR_ERROR 0x20001). Kernel-space trap addresses (0xfffff8xx) point at the Windows Hyper-V enlightened TLB-flush hypercall path.",
+      "relatedBugCheck": "0x00020001",
+      "captureGroups": { "1": "kvmThread", "2": "trapAddress" }
+    },
+    {
+      "id": "kvm-internal-error",
+      "pattern": "KVM: entry failed|kvm.*internal error|disabled perfctr wrmsr",
+      "logSource": "kernel (journalctl -k / dmesg)",
+      "meaning": "KVM reported a VM-entry failure or internal error. Can accompany a guest bugcheck when guest state was corrupted (e.g. by an NMI delivered mid-hypercall).",
+      "relatedBugCheck": null
+    }
+  ],
+  "hypervEnlightenments": [
+    {
+      "name": "tlbflush",
+      "element": "tlbflush",
+      "xpath": "/domain/features/hyperv/tlbflush/@state",
+      "risk": "high",
+      "meaning": "Hyper-V enlightened remote TLB flush. Exercises a misaligned-atomic hypercall path that can trigger split-lock HYPERVISOR_ERROR on affected platforms. Disabling it (native IPI-based invalidation fallback) is a validated mitigation."
+    },
+    {
+      "name": "ipi",
+      "element": "ipi",
+      "xpath": "/domain/features/hyperv/ipi/@state",
+      "risk": "high",
+      "meaning": "Hyper-V enlightened inter-processor interrupts. Part of the same enlightened path; disabled alongside tlbflush in the validated mitigation."
+    },
+    {
+      "name": "reenlightenment",
+      "element": "reenlightenment",
+      "xpath": "/domain/features/hyperv/reenlightenment/@state",
+      "risk": "low",
+      "meaning": "Hyper-V TSC re-enlightenment notification. Not a direct trigger but part of the enlightenment surface area."
+    },
+    {
+      "name": "vapic",
+      "element": "vapic",
+      "xpath": "/domain/features/hyperv/vapic/@state",
+      "risk": "low",
+      "meaning": "Hyper-V virtual APIC. Not a direct trigger but part of the enlightenment surface area."
+    },
+    {
+      "name": "spinlocks",
+      "element": "spinlocks",
+      "xpath": "/domain/features/hyperv/spinlocks/@state",
+      "risk": "low",
+      "meaning": "Hyper-V spinlock enlightenment. Not a direct trigger but part of the enlightenment surface area."
+    },
+    {
+      "name": "synictimer",
+      "element": "stimer",
+      "xpath": "/domain/features/hyperv/stimer/@state",
+      "risk": "low",
+      "meaning": "Hyper-V synthetic timers (libvirt element stimer, with the .direct sub-feature). Not a direct trigger but part of the enlightenment surface area."
+    }
+  ]
+}

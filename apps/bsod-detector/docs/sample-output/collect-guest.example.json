@@ -1,0 +1,205 @@
+{
+    "ok":  true,
+    "collectedAt":  "2026-08-20T19:40:02.0034931Z",
+    "outputDir":  "C:\\bsod-detector\\output\\dryrun-current",
+    "system":  {
+                   "osBuild":  "Microsoft Windows Server 2025 Standard Evaluation build 26100",
+                   "uptimeSeconds":  67,
+                   "cpu":  "11th Gen Intel(R) Core(TM) i7-1185G7 @ 3.00GHz"
+               },
+    "crash":  {
+                  "bugCheckCode":  "0x00000050",
+                  "bugCheckName":  "PAGE_FAULT_IN_NONPAGED_AREA",
+                  "parameters":  [
+                                     "0xffffac82e1c2d000",
+                                     "0x0000000000000002",
+                                     "0xfffff80c4ca61d90",
+                                     "0x0000000000000002"
+                                 ],
+                  "faultingModule":  null,
+                  "dumpFiles":  [
+                                    "Minidump\\082026-10531-01.dmp"
+                                ],
+                  "crashTime":  "2026-08-20T19:39:03.8458268Z"
+              },
+    "events":  [
+                   {
+                       "log":  "System",
+                       "eventId":  1001,
+                       "time":  "2026-08-20T19:39:03.8458268Z",
+                       "message":  "The computer has rebooted from a bugcheck. The bugcheck was: 0x00000050 (0xffffac82e1c2d000, 0x0000000000000002, 0xfffff80c4ca61d90, 0x0000000000000002). A dump was saved in: C:\\WINDOWS\\Minidump\\082026-10531-01.dmp. Report Id: 981c8515-f96d-4e77-a657-3847327ac75a."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  1001,
+                       "time":  "2026-08-20T19:20:24.4355361Z",
+                       "message":  "The computer has rebooted from a bugcheck. The bugcheck was: 0x000000be (0xfffff800a944daa0, 0x0900000117a0d121, 0xffffa58630dfeca0, 0x000000000000000b). A dump was saved in: C:\\WINDOWS\\Minidump\\082026-10140-01.dmp. Report Id: 625b4306-9b65-40c2-88db-dce4fd63eef1."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  1001,
+                       "time":  "2026-08-20T19:13:03.8071920Z",
+                       "message":  "The computer has rebooted from a bugcheck. The bugcheck was: 0x000000d1 (0xffff9f0227915800, 0x0000000000000002, 0x0000000000000000, 0xfffff808b9c91e35). A dump was saved in: C:\\WINDOWS\\Minidump\\082026-9515-01.dmp. Report Id: f8fb8bb7-9614-4aa8-b14e-b6c0654b8a82."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  1001,
+                       "time":  "2026-08-20T19:05:57.8159692Z",
+                       "message":  "The computer has rebooted from a bugcheck. The bugcheck was: 0x00000139 (0x0000000000000002, 0xffff9189d27aebf0, 0xffff9189d27aeb48, 0x0000000000000000). A dump was saved in: C:\\WINDOWS\\Minidump\\082026-9468-01.dmp. Report Id: 2f2d479e-cb0a-4667-b54b-067f64708339."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  1001,
+                       "time":  "2026-08-20T19:02:23.9597970Z",
+                       "message":  "The computer has rebooted from a bugcheck. The bugcheck was: 0x000000d1 (0xffffce0ac0025800, 0x0000000000000002, 0x0000000000000000, 0xfffff80df7421e35). A dump was saved in: C:\\WINDOWS\\Minidump\\082026-9656-01.dmp. Report Id: b8fba46e-72b7-4a96-9c11-0b165a7c1964."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  6008,
+                       "time":  "2026-08-20T19:39:10.1354515Z",
+                       "message":  "The previous system shutdown at 2:37:59 PM on ?8/?20/?2026 was unexpected."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  6008,
+                       "time":  "2026-08-20T19:20:31.4808919Z",
+                       "message":  "The previous system shutdown at 2:19:16 PM on ?8/?20/?2026 was unexpected."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  6008,
+                       "time":  "2026-08-20T19:13:10.7184040Z",
+                       "message":  "The previous system shutdown at 2:11:57 PM on ?8/?20/?2026 was unexpected."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  6008,
+                       "time":  "2026-08-20T19:06:04.5417682Z",
+                       "message":  "The previous system shutdown at 12:04:33 PM on ?8/?20/?2026 was unexpected."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  6008,
+                       "time":  "2026-08-20T19:02:30.9154190Z",
+                       "message":  "The previous system shutdown at 12:00:59 PM on ?8/?20/?2026 was unexpected."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  41,
+                       "time":  "2026-08-20T19:38:57.9475124Z",
+                       "message":  "The system has rebooted without cleanly shutting down first. This error could be caused if the system stopped responding, crashed, or lost power unexpectedly."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  41,
+                       "time":  "2026-08-20T19:20:18.7063989Z",
+                       "message":  "The system has rebooted without cleanly shutting down first. This error could be caused if the system stopped responding, crashed, or lost power unexpectedly."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  41,
+                       "time":  "2026-08-20T19:12:58.1046522Z",
+                       "message":  "The system has rebooted without cleanly shutting down first. This error could be caused if the system stopped responding, crashed, or lost power unexpectedly."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  41,
+                       "time":  "2026-08-20T19:05:51.9850571Z",
+                       "message":  "The system has rebooted without cleanly shutting down first. This error could be caused if the system stopped responding, crashed, or lost power unexpectedly."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  41,
+                       "time":  "2026-08-20T19:02:18.0091180Z",
+                       "message":  "The system has rebooted without cleanly shutting down first. This error could be caused if the system stopped responding, crashed, or lost power unexpectedly."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  12,
+                       "time":  "2026-08-20T19:38:53.7193794Z",
+                       "message":  "The operating system started at system time ?2026?-?08?-?20T19:38:53.500000000Z."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  12,
+                       "time":  "2026-08-20T21:37:37.6963961Z",
+                       "message":  "The operating system started at system time ?2026?-?08?-?20T21:37:37.500000000Z."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  12,
+                       "time":  "2026-08-20T19:20:14.7069485Z",
+                       "message":  "The operating system started at system time ?2026?-?08?-?20T19:20:14.500000000Z."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  12,
+                       "time":  "2026-08-20T21:18:56.7145324Z",
+                       "message":  "The operating system started at system time ?2026?-?08?-?20T21:18:56.500000000Z."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  12,
+                       "time":  "2026-08-20T21:16:18.6968152Z",
+                       "message":  "The operating system started at system time ?2026?-?08?-?20T21:16:18.500000000Z."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  13,
+                       "time":  "2026-08-20T19:31:18.4050955Z",
+                       "message":  "The operating system is shutting down at system time ?2026?-?08?-?20T19:31:18.405093100Z."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  13,
+                       "time":  "2026-08-20T19:17:20.5052415Z",
+                       "message":  "The operating system is shutting down at system time ?2026?-?08?-?20T19:17:20.505239300Z."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  13,
+                       "time":  "2026-08-20T19:14:00.8160910Z",
+                       "message":  "The operating system is shutting down at system time ?2026?-?08?-?20T19:14:00.816087500Z."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  13,
+                       "time":  "2026-08-20T19:08:13.6102379Z",
+                       "message":  "The operating system is shutting down at system time ?2026?-?08?-?20T19:08:13.610235600Z."
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  13,
+                       "time":  "2026-08-20T18:40:29.5990640Z",
+                       "message":  "The operating system is shutting down at system time ?2026?-?08?-?20T18:40:29.599061700Z."
+                   },
+                   {
+                       "log":  "Application",
+                       "eventId":  1001,
+                       "time":  "2026-08-20T19:39:46.8908140Z",
+                       "message":  "Fault bucket , type 0 Event Name: BlueScreen Response: Not available Cab Id: 0 Problem signature: P1: be P2: fffff800a944daa0 P3: 900000117a0d121 P4: ffffa58630dfeca0 P5: b P6: 10_0_26100 P7: 0_0 P8: 272_3 P9: P10: Attached files: \\\\?\\C:\\WINDOWS\\Minidump\\082026-10140-01.dmp \\\\?\\C:\\WINDOWS\\SystemTemp\\WER-10203-0.sysdata.xml \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.49882f47-e5aa-4398-ae98-9376d4de5779.tmp.WERInternalMetadata.xml \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.68408b71-c644-40f0-b2e9-1bd4c267b8be.tmp.csv \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.5f9cf1d6-79c7-4510-b6b2-c543e845a56e.tmp.txt \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.5e34fac4-9f3f-43a2-9298-10bebbded4e9.tmp.xml These files may be available here: \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\\Kernel_be_fe783d68768f734fc63b1b1ca2bba54534729e_00000000_240a4f87-2e0e-4afc-85bb-ec5b78ac5306 Analysis symbol: Rechecking for solution: 0 Report Id: 625b4306-9b65-40c2-88db-dce4fd63eef1 Report Status: 2049 Hashed bucket: Cab Guid: 0"
+                   },
+                   {
+                       "log":  "Application",
+                       "eventId":  1001,
+                       "time":  "2026-08-20T19:39:45.5168007Z",
+                       "message":  "Fault bucket , type 0 Event Name: BlueScreen Response: Not available Cab Id: 0 Problem signature: P1: 139 P2: 2 P3: ffff9189d27aebf0 P4: ffff9189d27aeb48 P5: 0 P6: 10_0_26100 P7: 0_0 P8: 272_3 P9: P10: Attached files: \\\\?\\C:\\WINDOWS\\Minidump\\082026-9468-01.dmp \\\\?\\C:\\WINDOWS\\SystemTemp\\WER-9546-0.sysdata.xml \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.9988df23-b379-41bb-97c3-2892a77862d6.tmp.WERInternalMetadata.xml \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.316f10b5-5735-402e-afba-97f8cccd2c7a.tmp.csv \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.5db3f0ae-c502-4bbb-8641-d2ed1d165bae.tmp.txt \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.a7471401-68be-43a8-9bbf-e21d3b2ed819.tmp.xml These files may be available here: \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\\Kernel_139_2b7b654ee7723962f234813294011e0dbf286a_00000000_7ac93e29-d604-4b52-85a2-bb3cae4c14d4 Analysis symbol: Rechecking for solution: 0 Report Id: 2f2d479e-cb0a-4667-b54b-067f64708339 Report Status: 2049 Hashed bucket: Cab Guid: 0"
+                   },
+                   {
+                       "log":  "Application",
+                       "eventId":  1001,
+                       "time":  "2026-08-20T19:39:40.3732633Z",
+                       "message":  "Fault bucket , type 0 Event Name: BlueScreen Response: Not available Cab Id: 0 Problem signature: P1: d1 P2: ffffce0ac0025800 P3: 2 P4: 0 P5: fffff80df7421e35 P6: 10_0_26100 P7: 0_0 P8: 272_3 P9: P10: Attached files: \\\\?\\C:\\WINDOWS\\Minidump\\082026-9656-01.dmp \\\\?\\C:\\WINDOWS\\SystemTemp\\WER-9734-0.sysdata.xml \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.a17634a8-fedc-4521-b318-4531357849ee.tmp.WERInternalMetadata.xml \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.0d79b0c6-0edb-4f12-b610-645c35f997e5.tmp.csv \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.7d9952c5-45ff-4781-bbec-0d6c79fcbbdf.tmp.txt \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.b4b3651a-fe7c-4cb1-be07-d482e686d464.tmp.xml These files may be available here: \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\\Kernel_d1_ad33b3deb03bc91dd44ecd5f99789c4b482fdcdd_00000000_ef643f70-8c7a-45ca-bfe8-30acedc53c2d Analysis symbol: Rechecking for solution: 0 Report Id: b8fba46e-72b7-4a96-9c11-0b165a7c1964 Report Status: 2049 Hashed bucket: Cab Guid: 0"
+                   },
+                   {
+                       "log":  "Application",
+                       "eventId":  1001,
+                       "time":  "2026-08-20T19:39:35.5593943Z",
+                       "message":  "Fault bucket , type 0 Event Name: LiveKernelEvent Response: Not available Cab Id: 0 Problem signature: P1: 1a8 P2: a P3: 0 P4: 0 P5: 0 P6: 10_0_26100 P7: 0_0 P8: 272_3 P9: P10: Attached files: \\\\?\\C:\\WINDOWS\\LiveKernelReports\\WATCHDOG\\WATCHDOG-20260818-1203.dmp \\\\?\\C:\\WINDOWS\\SystemTemp\\WER-464609-0.sysdata.xml \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.076717ec-f70c-4d6b-aa21-9d3692099a71.tmp.WERInternalMetadata.xml \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.f300e9f4-333f-4fba-9df4-6100d32a2175.tmp.csv \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.6bbb43dd-f8a3-4797-a367-18a4b765fe4f.tmp.txt \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\Temp\\WER.c0284c1c-f7c0-4542-acfe-21745578d716.tmp.xml These files may be available here: \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\\Kernel_1a8_1bb6b61f8d70287bd75b2b66f7a1d1e54e9a3a2_00000000_3354f4ba-5157-4725-b346-2a9d81479ecc Analysis symbol: Rechecking for solution: 0 Report Id: 3354f4ba-5157-4725-b346-2a9d81479ecc Report Status: 2049 Hashed bucket: Cab Guid: 0"
+                   }
+               ],
+    "suspectDriver":  null,
+    "warnings":  [
+
+                 ]
+}
