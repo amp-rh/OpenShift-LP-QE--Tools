@@ -27,7 +27,7 @@ SNAPSHOT="${SNAPSHOT:-crashme-installed}"
 
 typeset code="0x19"
 typeset revert=1
-typeset out="$repo/output/dryrun-$(date +%Y%m%d-%H%M%S)"
+typeset out; out="$repo/output/dryrun-$(date +%Y%m%d-%H%M%S)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
