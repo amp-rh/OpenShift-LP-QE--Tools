@@ -33,7 +33,7 @@ Linux/KVM **host-side** crash-correlation signals invisible from inside the
 guest: kernel-log grep patterns (e.g. Intel split-lock `#AC` traps) and the
 Hyper-V enlightenment features (`tlbflush`, `ipi`, ...) to read from the libvirt
 domain XML.
-- **Consumers:** `vm/collect-host-signals.sh` reads both `kernelLogSignals` and
+- **Consumers:** `src/scripts/collect-host-signals.sh` reads both `kernelLogSignals` and
   `hypervEnlightenments`. Each signal's `relatedBugCheck` must resolve in
   `bugcheck-codes.json`.
 

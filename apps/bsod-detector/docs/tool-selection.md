@@ -38,7 +38,7 @@ complex fault injection paths.
   the guest OS itself recovers.
 - **Mount the guest qcow2 from the host** (via libguestfs / `host-tools/`) to
   pull `MEMORY.DMP` even when the guest will not boot. Most robust recovery route.
-- **Host kernel-log + VM-config signals** (via `vm/collect-host-signals.sh`) —
+- **Host kernel-log + VM-config signals** (via `src/scripts/collect-host-signals.sh`) —
   some root causes never appear in the guest dump. For example, HYPERVISOR_ERROR
   (0x20001) can be caused by Intel split-lock `#AC` traps during a Hyper-V
   enlightened TLB-flush hypercall; the only evidence is the host kernel log

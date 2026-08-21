@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# run-dry-run.sh - end-to-end BSOD test loop against the local bsod-test guest.
+# run-dry-run.sh - BSOD test trigger for the local bsod-test guest.
 #
-# Runs on the HOST. Orchestrates one full cycle:
+# Runs on the HOST. Orchestrates one test cycle:
 #   1. (optional) revert the guest to the crashme-installed snapshot
 #   2. start the guest and wait for SSH
 #   3. trigger a BSOD via the CrashMe driver with a specified code
-#   4. wait for the auto-reboot
-#   5. collect post-mortem evidence and copy artifacts back to the host
+#   4. delegate to src/scripts/collect-all.sh for evidence collection
+#   5. print summary
 #
 # All guest interaction goes through vm/guest-ssh.sh (SSH key auth). Never
 # point this at anything but a disposable/snapshotted test VM.
@@ -28,7 +28,6 @@ SNAPSHOT="${SNAPSHOT:-crashme-installed}"
 typeset code="0x19"
 typeset revert=1
 typeset out="$repo/output/dryrun-$(date +%Y%m%d-%H%M%S)"
-typeset guestScripts='C:/bsod-detector/scripts'
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -59,11 +58,6 @@ print(' '.join(tm[code]['parameters']))
   true
 }
 
-function GuestBootTime () {
-  "$gssh" -c '(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToString("o")' 2>/dev/null | tr -d '\r' | tr -d '[:space:]'
-  true
-}
-
 function WaitForSsh () {
   for _ in $(seq 1 25); do
     "$gssh" -c '"up"' 2>/dev/null | grep -q up && return 0
@@ -89,43 +83,29 @@ fi
 Log "waiting for guest SSH"
 WaitForSsh || { echo "guest never came up" >&2; exit 1; }
 
-typeset before; before="$(GuestBootTime)"
-Log "pre-crash boot time: $before"
-
+# --- Trigger the crash ---
 Log "triggering BSOD: $codeNorm $params"
 "$gssh" -c "C:\\Tools\\crashme-ctl.exe $code $params" 2>&1 || true
 
-Log "waiting for auto-reboot"
-sleep 25
-typeset rebooted=0
-for _ in $(seq 1 30); do
-  typeset now; now="$(GuestBootTime)"
-  if [[ -n "$now" && "$now" != "$before" ]]; then rebooted=1; Log "rebooted: $now"; break; fi
-  sleep 10
-done
-[[ "$rebooted" == 1 ]] || { echo "guest did not reboot; crash may have failed" >&2; exit 1; }
+# --- Delegate all evidence collection to the detector ---
+Log "collecting evidence via collect-all.sh"
+"$repo/src/scripts/collect-all.sh" \
+  --vm "$VM_NAME" \
+  --out "$out" \
+  --ssh "$gssh"
 
-Log "collecting evidence -> $out"
-mkdir -p "$out"
-typeset guestOut='C:/bsod-detector/output/dryrun-current'
-"$gssh" -c "Remove-Item -Recurse -Force $guestOut -EA SilentlyContinue; & $guestScripts/collect-guest.ps1 -OutputDir ${guestOut//\//\\}" \
-  2>/dev/null | grep -avE '^#< CLIXML|<Objs ' > "$out/collect-guest.json" || true
-
-typeset ip; ip="$(virsh -q domifaddr "$VM_NAME" | awk 'NR==1{print $4}' | cut -d/ -f1)"
-typeset -a sshOpts=(-i "$repo/.ssh/bsod-test" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
-scp -r "${sshOpts[@]}" "Administrator@$ip:${guestOut}/*" "$out/" 2>/dev/null || true
-
-Log "done. Report + artifacts in: $out"
-python3 - "$out/collect-guest.json" <<'PY' 2>/dev/null || cat "$out/collect-guest.json"
+# --- Print summary ---
+python3 - "$out/evidence-summary.json" "$codeNorm" <<'PY' 2>/dev/null || true
 import json, sys
 d = json.load(open(sys.argv[1]))
-c = d.get("crash", {})
+c = d.get("crash") or {}
 code = c.get("bugCheckCode")
 name = c.get("bugCheckName")
 print(f"bugCheck : {code} ({name})")
 print("params   :", ", ".join(c.get("parameters", [])) or "(none)")
 print("dumps    :", ", ".join(c.get("dumpFiles", [])) or "(none)")
-print("warnings :", "; ".join(d.get("warnings", [])) or "(none)")
+arts = d.get("artifacts", {})
+print("screenshot:", arts.get("screenshot") or "(none)")
 expected = sys.argv[2] if len(sys.argv) > 2 else None
 if expected and code != expected:
     print(f"FAIL: expected {expected}, got {code}")

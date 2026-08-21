@@ -4,7 +4,7 @@ load test-helper
 
 setup() {
   SetupTemp
-  SCRIPT="$REPO_ROOT/vm/collect-host-signals.sh"
+  SCRIPT="$REPO_ROOT/src/scripts/collect-host-signals.sh"
   SPLIT_LOCK_LOG="$BATS_TMPDIR/dmesg-splitlock.txt"
   cat > "$SPLIT_LOCK_LOG" <<'EOF'
 [12345.678] x86/split lock detection: #AC: CPU 8/KVM/3051128 took a split_lock trap at address: 0xfffff801c684e9be

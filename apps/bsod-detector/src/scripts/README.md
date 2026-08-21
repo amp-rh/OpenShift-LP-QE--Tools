@@ -156,7 +156,7 @@ export LIBVIRT_DEFAULT_URI=qemu:///system
 ./vm/sweep-crashme.sh
 ```
 
-### vm/collect-host-signals.sh  _(host, bash)_
+### src/scripts/collect-host-signals.sh  _(host, bash)_
 
 **Purpose:** Capture Linux/KVM **host-side** crash-correlation signals that are
 invisible from inside the guest dump. Greps the host kernel log for the patterns
@@ -180,7 +180,7 @@ source of truth).
 **Usage:**
 ```bash
 export LIBVIRT_DEFAULT_URI=qemu:///system
-./vm/collect-host-signals.sh --vm bsod-test --since "3 hours ago"
+./src/scripts/collect-host-signals.sh --vm bsod-test --since "3 hours ago"
 ```
 
 <!-- Template for new entries:

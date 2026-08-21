@@ -1,5 +1,5 @@
 {
-  "_comment": "Source of truth for HOST-side (Linux/KVM hypervisor) crash-correlation signals that are invisible from inside the Windows guest. vm/collect-host-signals.sh reads this file to know which kernel-log patterns to grep for and which guest VM features to extract from the domain XML.",
+  "_comment": "Source of truth for HOST-side (Linux/KVM hypervisor) crash-correlation signals that are invisible from inside the Windows guest. src/scripts/collect-host-signals.sh reads this file to know which kernel-log patterns to grep for and which guest VM features to extract from the domain XML.",
   "kernelLogSignals": [
     {
       "id": "split-lock-trap",
