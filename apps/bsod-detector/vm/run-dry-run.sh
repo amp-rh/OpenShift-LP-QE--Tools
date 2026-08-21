@@ -47,7 +47,7 @@ function LookupParams () {
   python3 -c "
 import json, sys
 tm = json.load(open('$repo/src/data/trigger-methods.json'))['codes']
-code = sys.argv[1].upper()
+code = sys.argv[1].upper().replace('0X', '0x')
 if not code.startswith('0x'):
     code = '0x' + code
 code = '0x' + code[2:].zfill(8)
