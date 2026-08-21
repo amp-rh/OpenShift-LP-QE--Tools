@@ -30,7 +30,8 @@ RUN microdnf install -y \
 ENV LIBGUESTFS_BACKEND=direct
 
 WORKDIR /work
-COPY extract-dump.sh /usr/local/bin/extract-dump
+# Build context is apps/bsod-detector/ (see image/container/bsod-detector/Makefile).
+COPY host-tools/extract-dump.sh /usr/local/bin/extract-dump
 RUN chmod +x /usr/local/bin/extract-dump
 
 # Default: show usage.

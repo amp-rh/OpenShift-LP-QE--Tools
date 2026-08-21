@@ -274,7 +274,8 @@ These are set by `vm/prep-guest.ps1` and baked into the `clean-baseline` snapsho
 
 ### Host prerequisites (for the offline path)
 
-- **podman** with the `bsod-host-tools` image built: `podman build -t bsod-host-tools host-tools/`
+- **podman** with the `bsod-host-tools` image built (run from the repo root):
+  `podman build -t bsod-host-tools -f image/container/bsod-detector/Dockerfile apps/bsod-detector`
 - The guest disk must be **readable** by the invoking user and the VM **shut off**.
 
 ---
