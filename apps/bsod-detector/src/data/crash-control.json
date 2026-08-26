@@ -20,7 +20,7 @@
       "MinidumpDir": "%SystemRoot%\\Minidump",
       "DumpFile": "%SystemRoot%\\MEMORY.DMP"
     },
-    "notes": "CrashDumpEnabled=2 (kernel dump) writes a single MEMORY.DMP, overwritten on each crash (Overwrite=1). For per-crash artifacts, CrashDumpEnabled=3 (small dump) writes individual minidumps to MinidumpDir. AlwaysKeepMemoryDump=1 stops Windows from deleting MEMORY.DMP on low disk. AutoReboot=1 lets an unattended test host recover automatically."
+    "notes": "CrashDumpEnabled=2 (kernel dump) writes a single MEMORY.DMP in %SystemRoot%, overwritten on each crash (Overwrite=1). MinidumpDir is only used when CrashDumpEnabled=3 (small dump), which writes individual ~64KB minidumps per crash. Both are included here for documentation; the active setting (2) produces MEMORY.DMP only. AlwaysKeepMemoryDump=1 stops Windows from deleting MEMORY.DMP on low disk. AutoReboot=1 lets an unattended test host recover automatically."
   },
   "pageFile": {
     "path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management",

@@ -132,8 +132,13 @@ typeset hasHostSignals=false; [[ -s "$outDir/host-signals.json" ]] && hasHostSig
 typeset -a dumpFiles=()
 if [[ -d "$outDir/Minidump" ]]; then
   while IFS= read -r f; do
-    dumpFiles+=("$(basename "$f")")
-  done < <(find "$outDir/Minidump" -name '*.dmp' 2>/dev/null)
+    dumpFiles+=("Minidump/$(basename "${f}")")
+  done < <(find "${outDir}/Minidump" -name '*.dmp' 2>/dev/null)
+fi
+typeset hasMemoryDmp=false
+if [[ -f "${outDir}/MEMORY.DMP" ]]; then
+  hasMemoryDmp=true
+  dumpFiles+=("MEMORY.DMP")
 fi
 
 python3 - "$outDir" "$hasScreenshot" "$guestCollected" "$hasHostSignals" "${dumpFiles[@]}" <<'PY'
@@ -160,7 +165,7 @@ summary = {
         "screenshot": "bsod-screenshot.png" if has_screenshot else None,
         "guestReport": "collect-guest.json" if guest_collected else None,
         "hostSignals": "host-signals.json" if has_host_signals else None,
-        "dumpFiles": [f"Minidump/{f}" for f in dump_files],
+        "dumpFiles": dump_files,
     },
     "crash": crash_info,
 }
