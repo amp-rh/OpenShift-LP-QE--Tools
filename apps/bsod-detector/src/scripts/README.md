@@ -11,8 +11,9 @@ Typical test run (guest unless noted):
 1. `configure-dumps.ps1` — set `CrashControl` so a dump gets written (prerequisite).
 2. Trigger via CrashMe driver (`crashme-ctl.exe <code> <p1> <p2> <p3> <p4>`).
 3. After reboot, `collect-guest.ps1` — pull dumps, events, context.
-4. `collect-from-host.ps1` (host) — detect the crash and recover the dump when
-   the guest is frozen or won't boot.
+4. `collect-from-host.ps1` (Hyper-V host) — detect the crash and recover the
+   dump when the guest is frozen or won't boot. On a **libvirt/KVM (KubeVirt)**
+   host use `collect-from-host.sh` instead (same JSON contract).
 
 ## Shared library
 
@@ -28,9 +29,12 @@ source-of-truth JSON (`Get-BsodData`), emits the single stdout JSON result
 Status: `collect-guest.ps1` is **implemented and verified** against a live
 Windows Server 2025 guest. All 19 bug-check codes in `data/trigger-methods.json`
 have been verified end-to-end using the KeBugCheckEx test driver
-(`vm/sweep-crashme.sh`). `configure-dumps.ps1` and `collect-from-host.ps1`
-remain stubs (their job is covered for the current Linux/KVM setup by
-`vm/prep-guest.ps1` and `host-tools/`, respectively).
+(`vm/sweep-crashme.sh`). `configure-dumps.ps1` (guest, CrashControl registry)
+and `collect-from-host.ps1` (Hyper-V host-side detect + offline VHDX/LiveKd
+dump recovery) are **implemented**. For the Linux/KVM (KubeVirt) target the
+freeze-detect + offline-recovery job is covered by `collect-from-host.sh` (the
+libvirt-native sibling) on top of `host-tools/`, and dump configuration by
+`vm/prep-guest.ps1`.
 
 ### configure-dumps.ps1  _(guest, elevated)_
 
@@ -92,6 +96,42 @@ when the guest is frozen, rebooting, or unbootable.
 `-Mode <detect|recover>`.
 
 **Output:** `{ ok, vm, mode, guestState, crashDetected, recovery, warnings }`.
+
+### collect-from-host.sh  _(libvirt/KVM host, bash)_
+
+**Purpose:** The libvirt-native counterpart to `collect-from-host.ps1` for the
+KubeVirt/OpenShift-Virtualization target. Detects a guest hang/freeze and
+recovers dumps offline when the guest is frozen or unbootable. Detection uses
+`virsh domstate` plus a `qemu-guest-agent` `guest-ping` — a domain that is
+`running` but no longer answers the agent within 5 s is the classic BSOD/hang
+signature. Recovery resolves the guest disk via `virsh domblklist` and delegates
+the actual offline dump pull to `host-tools/extract-dump.sh` (libguestfs on the
+host) or `host-tools/run.sh` (same, in a container); an optional
+`virsh dump --memory-only` fallback captures live guest memory (a QEMU/ELF image,
+**not** a Windows `MEMORY.DMP`) when the guest cannot be powered off.
+
+**Inputs:** `--vm <name>` (required), `--mode <detect|recover>` (default
+`recover`), `--out <dir>`, `--disk <path>` (auto-resolved if omitted),
+`--windows-root <path>` (default `/Windows`), `--force` (read the disk while the
+VM is still `running`; risks an inconsistent image), `--virsh-dump` (enable the
+live-memory fallback).
+
+**Requires:** `virsh`, `jq`, and for recovery either `virt-copy-out` (libguestfs)
+or `podman` (to run `host-tools/`).
+
+**Output:** `{ ok, vm, mode, guestState, crashDetected, recovery:{ method, dumpFiles, outputDir }, warnings }`
+— the same contract as `collect-from-host.ps1`. `guestState` is one of
+`running|off|hung|crashed|rebooting|unknown`; `method` is one of
+`none|guestfs-copy-out|guestfs-container|virsh-memory-dump`.
+
+**Usage:**
+```bash
+export LIBVIRT_DEFAULT_URI=qemu:///system
+# 1. Detect a freeze (no disk access):
+./src/scripts/collect-from-host.sh --vm bsod-test --mode detect
+# 2. After powering off a wedged guest (e.g. vmctl.sh kill), recover its dumps:
+./src/scripts/collect-from-host.sh --vm bsod-test --mode recover --out ./output/dumps
+```
 
 ### parse-dump-header.sh  _(host, Linux/macOS)_
 
@@ -168,7 +208,26 @@ hypercall) — a signal that never appears in the Windows guest.
 
 **Inputs:** `--vm <name>` (default `$VM_NAME`/`bsod-test`), `--since <window>`
 (journalctl window, default "2 hours ago"), `--dmesg` (read `dmesg` instead of
-`journalctl -k`), `--log-file <path>` (parse a captured kernel log file).
+`journalctl -k`), `--log-file <path>` (parse a captured kernel log file),
+`--domain-xml <path>` (read the domain XML from a file instead of `virsh dumpxml`).
+
+**On OpenShift/KubeVirt** the node kernel log and the libvirt domain live in
+different execution contexts (worker node vs `virt-launcher` pod), and the domain
+is named `<namespace>_<vmname>`. Capture both to files and feed them in offline:
+
+```bash
+NODE=$(oc get vmi -n <ns> <vm> -o jsonpath='{.status.nodeName}')
+POD=$(oc get pod -n <ns> -l kubevirt.io=virt-launcher,kubevirt.io/created-by \
+        -o name | head -n1)   # or: oc get pod -n <ns> | grep virt-launcher-<vm>
+oc debug node/$NODE -- chroot /host dmesg          > kern.log
+oc exec -n <ns> $POD -- virsh dumpxml <ns>_<vm>    > dom.xml
+./src/scripts/collect-host-signals.sh --vm <ns>_<vm> \
+    --log-file kern.log --domain-xml dom.xml
+```
+
+Prerequisite: the worker node must have split-lock detection enabled
+(`split_lock_detect=warn`/`on`) or the `#AC` line never appears, regardless of
+the crash.
 
 **Reads:** `data/host-signals.json` (kernel-log patterns + Hyper-V feature list;
 source of truth).
