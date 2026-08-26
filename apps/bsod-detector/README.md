@@ -15,6 +15,10 @@ When Windows hits a BSOD, capture and persist everything useful for root-cause a
 Detection is **implicit**: the collector catches any bug-check code that occurs,
 not just a pre-defined set. The `src/data/trigger-methods.json` file defines the
 19 codes we deliberately exercise in CI using the KeBugCheckEx test driver.
+The `src/data/chaos-triggers.json` file defines 12 organic fault injection
+triggers (NMI, memory balloon, device hot-remove, Driver Verifier stress, block
+I/O throttle, Hyper-V enlightenment permutation) that produce real BSODs through
+actual failure conditions.
 
 Keep it simple. Prefer a small, well-defined tool over a broad framework.
 
@@ -62,7 +66,7 @@ apps/bsod-detector/
 ├── src/
 │   ├── scripts/           # Collection and configuration scripts (PowerShell + Bash)
 │   │   └── README.md      # Script catalog: purpose, inputs, output shape
-│   ├── data/              # Source-of-truth lookups (bug-check codes, log sources)
+│   ├── data/              # Source-of-truth lookups (bug-check codes, log sources, chaos triggers)
 │   └── test-driver/       # KeBugCheckEx kernel driver (cross-compiled with mingw64)
 ├── test/                  # bats unit test suite (run-tests.sh)
 ├── docs/                  # Design notes and usage

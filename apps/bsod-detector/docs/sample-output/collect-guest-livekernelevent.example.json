@@ -1,0 +1,45 @@
+{
+    "ok":  true,
+    "collectedAt":  "2026-08-26T16:02:15.0000000Z",
+    "outputDir":  "C:\\bsod-detector\\output\\chaos-verifier-lowres",
+    "system":  {
+                   "osBuild":  "Microsoft Windows Server 2025 Standard Evaluation build 26100",
+                   "uptimeSeconds":  42,
+                   "cpu":  "Intel(R) Xeon(R) Platinum 8260 CPU @ 2.40GHz"
+               },
+    "crash":  {
+                  "detected":  true,
+                  "crashType":  "livekernelevent",
+                  "bugCheckCode":  "0x000001A8",
+                  "bugCheckName":  null,
+                  "parameters":  ["1a8", "a", "0", "0", "0"],
+                  "faultingModule":  null,
+                  "dumpFiles":  [
+                                    "LiveKernelReports\\WATCHDOG\\WATCHDOG-20260826-1556.dmp"
+                                ],
+                  "crashTime":  "2026-08-26T15:56:23.0000000Z",
+                  "analysis":  null
+              },
+    "events":  [
+                   {
+                       "log":  "System",
+                       "eventId":  6008,
+                       "time":  "2026-08-26T16:01:58.0000000Z",
+                       "message":  "The previous system shutdown at 15:56:20 on 8/26/2026 was unexpected."
+                   },
+                   {
+                       "log":  "Application",
+                       "eventId":  1001,
+                       "time":  "2026-08-26T16:02:05.0000000Z",
+                       "message":  "Fault bucket , type 0 Event Name: LiveKernelEvent Response: Not available Cab Id: 0 Problem signature: P1: 1a8 P2: a P3: 0 P4: 0 P5: 0 P6: 10_0_26100 P7: 0_0 P8: 768_1 P9: P10: Attached files: \\\\?\\C:\\WINDOWS\\LiveKernelReports\\WATCHDOG\\WATCHDOG-20260826-1556.dmp These files may be available here: \\\\?\\C:\\ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\\Kernel_1a8_example Report Id: 00000000-0000-0000-0000-000000000003 Report Status: 2049 Hashed bucket: Cab Guid: 0"
+                   },
+                   {
+                       "log":  "System",
+                       "eventId":  6009,
+                       "time":  "2026-08-26T16:01:55.0000000Z",
+                       "message":  "Microsoft (R) Windows (R) 10.00. 26100 Multiprocessor Free."
+                   }
+               ],
+    "suspectDriver":  null,
+    "warnings":  []
+}

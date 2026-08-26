@@ -43,6 +43,18 @@
       "source": "Microsoft-Windows-WHEA-Logger",
       "eventId": 18,
       "meaning": "WHEA fatal hardware error. Relevant when the stop code is 0x124 (WHEA_UNCORRECTABLE_ERROR)."
+    },
+    {
+      "log": "System",
+      "source": "EventLog",
+      "eventId": 6009,
+      "meaning": "OS version stamp logged at boot. Anchors the boot sequence following a crash or clean restart."
+    },
+    {
+      "log": "System",
+      "source": "Microsoft-Windows-Kernel-LiveDump",
+      "eventId": 1,
+      "meaning": "A live kernel dump was captured. Indicates a non-fatal kernel event that produced a dump in LiveKernelReports without a full BSOD."
     }
   ]
 }

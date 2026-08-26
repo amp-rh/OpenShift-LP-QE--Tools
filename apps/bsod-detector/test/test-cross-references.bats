@@ -58,3 +58,36 @@ print(len(bad))
   bad=$(jq '[.hypervEnlightenments[] | select(.name == null or .risk == null)] | length' "$DATA_DIR/host-signals.json")
   [ "$bad" -eq 0 ]
 }
+
+@test "chaos-triggers expectedCodes resolve in bugcheck-codes.json" {
+  missing=$(python3 -c "
+import json
+ct = json.load(open('$DATA_DIR/chaos-triggers.json'))['triggers']
+bc = set(json.load(open('$DATA_DIR/bugcheck-codes.json'))['codes'].keys())
+bad = []
+for tid, t in ct.items():
+    for code in t.get('expectedCodes', []):
+        if code not in bc:
+            bad.append(f'{tid}:{code}')
+print(len(bad))
+")
+  [ "$missing" -eq 0 ]
+}
+
+@test "chaos-triggers enlightenment-toggle features exist in host-signals.json or domain XML" {
+  missing=$(python3 -c "
+import json
+ct = json.load(open('$DATA_DIR/chaos-triggers.json'))['triggers']
+hs = json.load(open('$DATA_DIR/host-signals.json'))
+known_names = {e['name'] for e in hs['hypervEnlightenments']}
+known_elements = {e.get('element', e['name']) for e in hs['hypervEnlightenments']}
+known = known_names | known_elements
+bad = []
+for tid, t in ct.items():
+    for feat in t.get('disableEnlightenments', []):
+        if feat not in known:
+            bad.append(f'{tid}:{feat}')
+print(len(bad))
+")
+  [ "$missing" -eq 0 ]
+}

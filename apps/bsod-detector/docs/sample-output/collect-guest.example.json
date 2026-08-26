@@ -8,6 +8,8 @@
                    "cpu":  "Intel(R) Xeon(R) Processor @ 2.00GHz"
                },
     "crash":  {
+                  "detected":  true,
+                  "crashType":  "bugcheck",
                   "bugCheckCode":  "0x00000050",
                   "bugCheckName":  "PAGE_FAULT_IN_NONPAGED_AREA",
                   "parameters":  [
@@ -20,7 +22,8 @@
                   "dumpFiles":  [
                                     "Minidump\\example-001.dmp"
                                 ],
-                  "crashTime":  "2026-08-20T19:39:03.0000000Z"
+                  "crashTime":  "2026-08-20T19:39:03.0000000Z",
+                  "analysis":  null
               },
     "events":  [
                    {
@@ -49,7 +52,5 @@
                    }
                ],
     "suspectDriver":  null,
-    "warnings":  [
-
-                 ]
+    "warnings":  []
 }

@@ -19,11 +19,19 @@ All scripts read their lookup tables from [`../data/`](../data/README.md); no ta
 Typical test run (guest unless noted):
 
 1. `configure-dumps.ps1` — set `CrashControl` so a dump gets written (prerequisite).
-2. Trigger via CrashMe driver (`crashme-ctl.exe <code> <p1> <p2> <p3> <p4>`).
+2. Trigger via CrashMe driver (`crashme-ctl.exe <code> <p1> <p2> <p3> <p4>`) or via
+   chaos fault injection (`vm/sweep-chaos.sh`).
 3. After reboot, `collect-guest.ps1` — pull dumps, events, context.
 4. `collect-from-host.ps1` (Hyper-V host) — detect the crash and recover the
    dump when the guest is frozen or won't boot. On a **libvirt/KVM (KubeVirt)**
    host use `collect-from-host.sh` instead (same JSON contract).
+
+### Chaos testing pipeline
+
+For organic fault injection (not KeBugCheckEx), the sweep loop is:
+revert → start → SSH → [workload] → inject fault → detect crash → collect.
+Chaos triggers may produce no crash (valid outcome). See `vm/sweep-chaos.sh`
+and `data/chaos-triggers.json` for trigger definitions.
 
 ## Shared library
 
@@ -62,8 +70,16 @@ on the next BSOD.
 
 **Purpose:** Collect post-mortem evidence from inside the guest after reboot
 (dumps, bug-check, crash-timeline events, system context, driver signature).
-Detects **any** bug-check code implicitly via the WER BugCheck event
-(System/1001); does not require the code to be pre-registered.
+Uses a three-tier detection fallback:
+
+1. **bugcheck**: System/1001 WER BugCheck event (traditional BSOD with stop code)
+2. **livekernelevent**: Application/1001 with EventName=LiveKernelEvent (non-fatal
+   kernel crash that produces dumps in `LiveKernelReports\` but bypasses the
+   traditional crash dump mechanism)
+3. **dirtyshutdown**: System/6008 dirty shutdown with no diagnostic event (crash
+   that bypassed both dump mechanisms entirely)
+
+Collects dumps from `Minidump\`, `MEMORY.DMP`, and `LiveKernelReports\`.
 
 **Inputs:** `-OutputDir` (default `<repo>\output\<timestamp>`, git-ignored),
 `-SysinternalsPath`, `-Symbolize` (also run `analyze-dump.ps1` on MEMORY.DMP to
@@ -73,9 +89,10 @@ resolve the failure bucket + faulting image and populate
 **Reads:** `data/bugcheck-codes.json`, `data/event-sources.json`.
 
 **Output:** `{ ok, collectedAt, outputDir, system, crash, events, suspectDriver, warnings }`.
-The bug-check code and its 4 parameters are parsed from the WER BugCheck event
-(System/1001) — reliable without a kernel debugger. Deep dump analysis
-(`analyze-dump.ps1`, `cdb !analyze -v`) runs only when `-Symbolize` is passed.
+The `crash` object includes `detected` (bool), `crashType` (one of `bugcheck`,
+`livekernelevent`, `dirtyshutdown`, or null if no crash evidence found), and the
+bug-check code/parameters when available. Deep dump analysis (`analyze-dump.ps1`,
+`cdb !analyze -v`) runs only when `-Symbolize` is passed.
 
 ### analyze-dump.ps1  _(any Windows with cdb.exe)_
 

@@ -4,12 +4,18 @@
 
 .DESCRIPTION
     Gathers everything useful for root-cause analysis from the guest OS:
-      - crash dump files (minidumps + MEMORY.DMP), copied to the output dir
+      - crash dump files (minidumps, MEMORY.DMP, LiveKernelReports), copied
+        to the output dir
       - the bug-check code/parameters and faulting module (from the dump and/or
         the BugCheck event), translated via data/bugcheck-codes.json
       - crash-timeline event log entries defined in data/event-sources.json
       - system context (OS build, uptime, CPU) and driver inventory
       - signature check of the suspect faulting driver
+
+    Detection uses a three-tier fallback:
+      1. System/1001 BugCheck event (traditional BSOD)
+      2. Application/1001 with EventName=LiveKernelEvent (non-fatal kernel crash)
+      3. System/6008 dirty shutdown with no diagnostic event (crash without dump)
 
     Runs on: the GUEST VM (can be driven remotely from the host via PsExec).
     Requires Administrator to read dumps and some event channels.
@@ -39,12 +45,14 @@
       "outputDir": "...\\output\\...",
       "system": { "osBuild": "...", "uptimeSeconds": 0, "cpu": "..." },
       "crash": {
+        "detected": true,
+        "crashType": "bugcheck|livekernelevent|dirtyshutdown",
         "bugCheckCode": "0x000000D1",
-        "bugCheckName": "DRIVER_IRQL_NOT_LESS_OR_EQUAL",   # from bugcheck-codes.json
+        "bugCheckName": "DRIVER_IRQL_NOT_LESS_OR_EQUAL",
         "parameters": ["0x...", "0x...", "0x...", "0x..."],
-        "faultingModule": "myfault.sys",   # populated when -Symbolize is set
+        "faultingModule": "myfault.sys",
         "dumpFiles": ["Minidump\\...dmp", "MEMORY.DMP"],
-        "analysis": null                     # analyze-dump.ps1 result when -Symbolize
+        "analysis": null
       },
       "events": [ { "log": "System", "eventId": 1001, "time": "...", "message": "..." } ],
       "suspectDriver": { "path": "...", "signed": true|false, "publisher": "..." },
@@ -75,6 +83,7 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 $dumpFiles = New-Object System.Collections.Generic.List[string]
 $paths   = Get-DumpPaths
 $miniDir = $paths.MinidumpDir
+$liveDir = Join-Path $env:SystemRoot 'LiveKernelReports'
 if (Test-Path $miniDir) {
     foreach ($m in Get-ChildItem (Join-Path $miniDir '*.dmp') -ErrorAction SilentlyContinue) {
         $dest = Join-Path $OutputDir (Join-Path 'Minidump' $m.Name)
@@ -91,15 +100,29 @@ foreach ($full in @($paths.DumpFile, $paths.DedicatedDumpFile)) {
         break
     }
 }
+if (Test-Path $liveDir) {
+    foreach ($sub in Get-ChildItem $liveDir -Directory -ErrorAction SilentlyContinue) {
+        foreach ($d in Get-ChildItem (Join-Path $sub.FullName '*.dmp') -ErrorAction SilentlyContinue) {
+            $relPath = Join-Path 'LiveKernelReports' (Join-Path $sub.Name $d.Name)
+            $dest = Join-Path $OutputDir $relPath
+            New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+            Copy-Item $d.FullName $dest -Force
+            $dumpFiles.Add($relPath)
+        }
+    }
+}
 if ($dumpFiles.Count -eq 0) {
-    $warnings.Add("No dump files found (looked in '$miniDir' and '$($paths.DumpFile)'). Check crash-dump configuration (configure-dumps.ps1).")
+    $warnings.Add("No dump files found (looked in '$miniDir', '$($paths.DumpFile)', and LiveKernelReports). Check crash-dump configuration (configure-dumps.ps1).")
 }
 
-# 3. Bug-check code: read the WER-SystemErrorReporting BugCheck event (System/1001).
-#    Its message embeds the stop code and 4 parameters. This is reliable without
-#    a kernel debugger; deep dump analysis is a separate, optional step.
+# 3. Crash detection: three-tier fallback.
+#    Tier 1: System/1001 WER-SystemErrorReporting (traditional BugCheck)
+#    Tier 2: Application/1001 with EventName=LiveKernelEvent (non-fatal kernel crash)
+#    Tier 3: System/6008 dirty shutdown with no diagnostic event
 $codes = (Get-BsodData 'bugcheck-codes.json').codes
 $crash = [ordered]@{
+    detected       = $false
+    crashType      = $null
     bugCheckCode   = $null
     bugCheckName   = $null
     parameters     = @()
@@ -108,16 +131,17 @@ $crash = [ordered]@{
     crashTime      = $null
     analysis       = $null
 }
+
+# Tier 1: Traditional BugCheck (System/1001 from WER-SystemErrorReporting).
 try {
     $bc = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting'; Id = 1001 } -MaxEvents 1 -ErrorAction Stop
     if ($bc) {
+        $crash.detected = $true
+        $crash.crashType = 'bugcheck'
         $crash.crashTime = $bc.TimeCreated.ToUniversalTime().ToString('o')
-        # Event message: "...bugcheck was: 0x000000d1 (0x..., 0x..., 0x..., 0x...)..."
         $text = $bc.Message
-        # "The bugcheck was: 0x000000d1 (0x..., 0x..., 0x..., 0x...). A dump..."
         $codeMatch = [regex]::Match($text, 'bugcheck was:\s*(0x[0-9a-fA-F]{8})\s*\(([^)]*)\)')
         if (-not $codeMatch.Success) {
-            # Fallback: first 8-digit hex anywhere in the message.
             $codeMatch = [regex]::Match($text, '(0x[0-9a-fA-F]{8})')
         }
         if ($codeMatch.Success) {
@@ -132,11 +156,64 @@ try {
                 $crash.parameters = @(($codeMatch.Groups[2].Value -split ',') | ForEach-Object { $_.Trim() })
             }
         }
-        # The faulting module is not in the WER 1001 event; it comes from deep
-        # dump analysis, run below when -Symbolize is set.
     }
 } catch {
-    $warnings.Add("Could not read BugCheck event (System/1001): $($_.Exception.Message)")
+    if ($_.Exception.Message -notmatch 'No events were found') {
+        $warnings.Add("Could not read BugCheck event (System/1001): $($_.Exception.Message)")
+    }
+}
+
+# Tier 2: LiveKernelEvent (Application/1001 with EventName=LiveKernelEvent).
+# These represent non-fatal kernel crashes that produce dumps in LiveKernelReports
+# but bypass the traditional BSOD crash dump mechanism.
+if (-not $crash.detected) {
+    try {
+        $werEvents = Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Windows Error Reporting'; Id = 1001 } -MaxEvents 10 -ErrorAction Stop
+        foreach ($evt in $werEvents) {
+            if ($evt.Message -match 'EventName:\s*LiveKernelEvent') {
+                $crash.detected = $true
+                $crash.crashType = 'livekernelevent'
+                $crash.crashTime = $evt.TimeCreated.ToUniversalTime().ToString('o')
+                $p1Match = [regex]::Match($evt.Message, 'P1:\s*([0-9a-fA-F]+)')
+                if ($p1Match.Success) {
+                    $norm = '0x' + $p1Match.Groups[1].Value.ToUpper().PadLeft(8, '0')
+                    $crash.bugCheckCode = $norm
+                    if ($codes.PSObject.Properties.Name -contains $norm) {
+                        $crash.bugCheckName = $codes.$norm.name
+                    }
+                }
+                $paramList = New-Object System.Collections.Generic.List[string]
+                for ($i = 1; $i -le 5; $i++) {
+                    $pm = [regex]::Match($evt.Message, "P${i}:\s*([^\s]+)")
+                    if ($pm.Success) { $paramList.Add($pm.Groups[1].Value) }
+                }
+                if ($paramList.Count -gt 0) { $crash.parameters = $paramList.ToArray() }
+                break
+            }
+        }
+    } catch {
+        if ($_.Exception.Message -notmatch 'No events were found') {
+            $warnings.Add("Could not read WER Application/1001 events: $($_.Exception.Message)")
+        }
+    }
+}
+
+# Tier 3: Dirty shutdown only (System/6008 present, no BugCheck or LiveKernelEvent).
+# This catches crashes that bypass both the normal and live dump mechanisms entirely.
+if (-not $crash.detected) {
+    try {
+        $dirty = Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 6008 } -MaxEvents 1 -ErrorAction Stop
+        if ($dirty) {
+            $crash.detected = $true
+            $crash.crashType = 'dirtyshutdown'
+            $crash.crashTime = $dirty.TimeCreated.ToUniversalTime().ToString('o')
+            $warnings.Add('Crash detected via dirty shutdown (System/6008) only; no BugCheck or LiveKernelEvent diagnostic event was logged. The crash dump mechanism may have been bypassed.')
+        }
+    } catch {
+        if ($_.Exception.Message -notmatch 'No events were found') {
+            $warnings.Add("Could not read dirty shutdown event (System/6008): $($_.Exception.Message)")
+        }
+    }
 }
 
 # 3b. Optional deep analysis: symbolize the MEMORY.DMP to get bucket + image.
