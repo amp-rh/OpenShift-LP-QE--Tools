@@ -5,12 +5,10 @@ on:
     branches: [ main, master ]
     paths:
       - 'apps/prow-analyzer/**'
-      - '.github/workflows/prow-analyzer--build.yaml'
   pull_request:
     branches: [ main, master ]
     paths:
       - 'apps/prow-analyzer/**'
-      - '.github/workflows/prow-analyzer--build.yaml'
 
 permissions:
   contents: read
