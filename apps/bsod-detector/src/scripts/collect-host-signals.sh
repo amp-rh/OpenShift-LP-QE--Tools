@@ -17,7 +17,17 @@
 #   --since  journalctl --since window for kernel logs (default: "2 hours ago")
 #   --dmesg  read `dmesg` instead of `journalctl -k` (use when journald has no
 #            kernel log or you are parsing a captured file via --log-file)
-#   --log-file <path>  parse kernel log from a file instead of the live system
+#   --log-file <path>    parse kernel log from a file instead of the live system
+#   --domain-xml <path>  read the guest domain XML from a file instead of `virsh
+#                        dumpxml`. Needed on OpenShift/KubeVirt, where the node
+#                        kernel log and the domain live in different execution
+#                        contexts (node vs virt-launcher pod), so both signals
+#                        must be captured to files and fed in offline:
+#                          oc debug node/<n> -- chroot /host dmesg           > kern.log
+#                          oc exec -n <ns> <virt-launcher> -- \
+#                            virsh dumpxml <ns>_<vm>                         > dom.xml
+#                          collect-host-signals.sh --vm <ns>_<vm> \
+#                            --log-file kern.log --domain-xml dom.xml
 #
 # Reads: data/host-signals.json (patterns + hyperv feature list; source of truth).
 #
@@ -41,6 +51,7 @@ VM_NAME="${VM_NAME:-bsod-test}"
 SINCE="2 hours ago"
 USE_DMESG=0
 LOG_FILE=""
+DOMAIN_XML_FILE=""
 
 function Warn () { echo "collect-host-signals: $*" >&2; true; }
 function Die ()  { Warn "$*"; exit 2; }
@@ -55,7 +66,8 @@ while [[ $# -gt 0 ]]; do
     --since) SINCE="$2"; shift 2 ;;
     --dmesg) USE_DMESG=1; shift ;;
     --log-file) LOG_FILE="$2"; shift 2 ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    --domain-xml) DOMAIN_XML_FILE="$2"; shift 2 ;;
+    -h|--help) sed -n '2,38p' "$0"; exit 0 ;;
     *) Die "unknown arg: $1" ;;
   esac
 done
@@ -120,11 +132,15 @@ typeset hypervFeatures="[]"
 typeset mitigationApplied=false
 typeset hypervInspected=false
 typeset domainXml=""
-if Have virsh; then
+if [[ -n "$DOMAIN_XML_FILE" ]]; then
+  [[ -f "$DOMAIN_XML_FILE" ]] || Die "domain XML file not found: $DOMAIN_XML_FILE"
+  domainXml="$(cat "$DOMAIN_XML_FILE")"
+  [[ -n "$domainXml" ]] || warnings+=("domain XML file '$DOMAIN_XML_FILE' is empty")
+elif Have virsh; then
   domainXml="$(virsh dumpxml "$VM_NAME" 2>/dev/null || true)"
-  [[ -n "$domainXml" ]] || warnings+=("could not read domain XML for '$VM_NAME' (is it defined?)")
+  [[ -n "$domainXml" ]] || warnings+=("could not read domain XML for '$VM_NAME' (is it defined? on OpenShift/KubeVirt use --domain-xml with 'oc exec <virt-launcher> -- virsh dumpxml <ns>_<vm>')")
 else
-  warnings+=("virsh not available; skipping Hyper-V feature extraction")
+  warnings+=("virsh not available and no --domain-xml provided; skipping Hyper-V feature extraction")
 fi
 
 if [[ -n "$domainXml" ]]; then

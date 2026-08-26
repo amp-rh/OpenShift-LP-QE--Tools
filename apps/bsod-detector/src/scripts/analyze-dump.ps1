@@ -127,16 +127,29 @@ $failureBucket = Get-Field $log 'FAILURE_BUCKET_ID'
 $imageName     = Get-Field $log 'IMAGE_NAME'
 $moduleName    = Get-Field $log 'MODULE_NAME'
 
-# Bugcheck code: "Bugcheck code 0000007A" or "BugCheck 7A, {..}".
+# Bugcheck code, tolerating several cdb/WinDbg output formats:
+#   modern:  "BUGCHECK_CODE:  ef"
+#   inline:  "BugCheck 7A, {..}"      (also carries the parameters)
+#   legacy:  "Bugcheck code 0000007A"
+#   banner:  "CRITICAL_PROCESS_DIED (ef)"
 $bugCheckCode = $null
 $parameters   = @()
+$mCode = [regex]::Match($log, '(?im)^\s*BUGCHECK_CODE:\s*([0-9A-Fa-f]+)\s*$')
+if ($mCode.Success) {
+    $bugCheckCode = '0x' + $mCode.Groups[1].Value.ToUpper().PadLeft(8, '0')
+}
 $m = [regex]::Match($log, 'BugCheck\s+([0-9A-Fa-f]+),\s*\{([^}]*)\}')
 if ($m.Success) {
-    $bugCheckCode = '0x' + $m.Groups[1].Value.ToUpper().PadLeft(8, '0')
+    if (-not $bugCheckCode) { $bugCheckCode = '0x' + $m.Groups[1].Value.ToUpper().PadLeft(8, '0') }
     $parameters = @(($m.Groups[2].Value -split ',') | ForEach-Object { '0x' + $_.Trim().TrimStart('0x','0X').ToLower() } | ForEach-Object { $_ })
-} else {
+}
+if (-not $bugCheckCode) {
     $m2 = [regex]::Match($log, '(?m)^\s*Bugcheck code\s+([0-9A-Fa-f]+)\s*$')
     if ($m2.Success) { $bugCheckCode = '0x' + $m2.Groups[1].Value.ToUpper().PadLeft(8, '0') }
+}
+if (-not $bugCheckCode) {
+    $m3 = [regex]::Match($log, '(?m)^[A-Z0-9_]+\s*\(([0-9a-fA-F]+)\)\s*$')
+    if ($m3.Success) { $bugCheckCode = '0x' + $m3.Groups[1].Value.ToUpper().PadLeft(8, '0') }
 }
 # Normalize parameters from the "Arg1: ... Arg2: ..." block when present.
 $argMatches = [regex]::Matches($log, '(?m)^\s*Arg\d:\s*([0-9a-fA-F`]+)')
