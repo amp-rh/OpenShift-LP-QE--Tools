@@ -27,6 +27,7 @@ typeset -a codes=(
   "0x00020001 0x32 0x1 0x0 0x0"
 )
 
+# Poll SSH until the guest responds or max attempts is exhausted (8s intervals).
 function WaitSsh () {
   typeset max="${1:-30}"
   for _i in $(seq 1 "$max"); do
@@ -36,6 +37,7 @@ function WaitSsh () {
   return 1
 }
 
+# Collect guest evidence and host signals after a CrashMe-triggered BSOD.
 function CollectResult () {
   typeset codeHex="$1"
   typeset sweepDir="output/sweep-${codeHex}"

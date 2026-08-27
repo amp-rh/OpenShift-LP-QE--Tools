@@ -20,6 +20,7 @@ typedef struct _CRASHME_MSR_INPUT {
     ULONG_PTR Value;
 } CRASHME_MSR_INPUT;
 
+/* Print usage and exit with error */
 static void usage(const char *prog)
 {
     fprintf(stderr, "Usage: %s <hex-bugcheck-code> [p1] [p2] [p3] [p4]\n", prog);
@@ -28,6 +29,7 @@ static void usage(const char *prog)
     exit(1);
 }
 
+/* Parse hex string into 32-bit value; exits on overflow or invalid input */
 static ULONG parse_ulong_hex(const char *s, const char *name)
 {
     char *end;
@@ -44,6 +46,7 @@ static ULONG parse_ulong_hex(const char *s, const char *name)
     return (ULONG)val;
 }
 
+/* Parse hex string into pointer-width value; exits on invalid input */
 static ULONG_PTR parse_ulongptr_hex(const char *s, const char *name)
 {
     char *end;
@@ -56,6 +59,7 @@ static ULONG_PTR parse_ulongptr_hex(const char *s, const char *name)
     return (ULONG_PTR)val;
 }
 
+/* Open \\.\CrashMe device handle; prints diagnostic if driver isn't loaded */
 static HANDLE open_crashme_device(void)
 {
     HANDLE h = CreateFileA("\\\\.\\CrashMe", GENERIC_READ | GENERIC_WRITE,
@@ -67,6 +71,7 @@ static HANDLE open_crashme_device(void)
     return h;
 }
 
+/* Handle --wrmsr subcommand: validate args, send WRMSR IOCTL to driver */
 static int do_wrmsr(int argc, char *argv[])
 {
     if (argc != 4)
@@ -94,6 +99,7 @@ static int do_wrmsr(int argc, char *argv[])
     return ok ? 0 : 1;
 }
 
+/* Route to --wrmsr subcommand or send bugcheck IOCTL with up to 4 params */
 int main(int argc, char *argv[])
 {
     if (argc < 2)

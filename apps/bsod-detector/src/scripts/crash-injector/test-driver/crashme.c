@@ -21,6 +21,7 @@ typedef struct _CRASHME_MSR_INPUT {
     ULONG_PTR Value;
 } CRASHME_MSR_INPUT, *PCRASHME_MSR_INPUT;
 
+/* Execute WRMSR instruction directly; caller must be at IRQL <= DISPATCH_LEVEL */
 static __inline void CrashMeWriteMsr(ULONG msr, ULONG_PTR value)
 {
     __asm__ __volatile__("wrmsr" : : "c"(msr),
@@ -31,6 +32,7 @@ static __inline void CrashMeWriteMsr(ULONG msr, ULONG_PTR value)
 static UNICODE_STRING DeviceName = RTL_CONSTANT_STRING(L"\\Device\\CrashMe");
 static UNICODE_STRING SymlinkName = RTL_CONSTANT_STRING(L"\\DosDevices\\CrashMe");
 
+/* Complete IRP immediately with SUCCESS; used for CREATE and CLOSE */
 static NTSTATUS CrashMeDispatchPassthrough(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
     UNREFERENCED_PARAMETER(DeviceObject);
@@ -40,6 +42,7 @@ static NTSTATUS CrashMeDispatchPassthrough(PDEVICE_OBJECT DeviceObject, PIRP Irp
     return STATUS_SUCCESS;
 }
 
+/* Dispatch IOCTL: triggers KeBugCheckEx or writes an MSR based on control code */
 static NTSTATUS CrashMeDispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
     UNREFERENCED_PARAMETER(DeviceObject);
@@ -66,12 +69,14 @@ static NTSTATUS CrashMeDispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP I
     return status;
 }
 
+/* Remove symlink and device object on driver unload */
 static VOID CrashMeUnload(PDRIVER_OBJECT DriverObject)
 {
     IoDeleteSymbolicLink(&SymlinkName);
     IoDeleteDevice(DriverObject->DeviceObject);
 }
 
+/* Create \Device\CrashMe, expose via \DosDevices symlink, wire up dispatch table */
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
     UNREFERENCED_PARAMETER(RegistryPath);

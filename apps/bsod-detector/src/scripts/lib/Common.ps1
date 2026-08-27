@@ -94,6 +94,7 @@ function Fail {
 }
 
 function Test-IsAdministrator {
+    <# .SYNOPSIS Return $true if the current process is running elevated (Administrator). #>
     $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
     $p  = New-Object System.Security.Principal.WindowsPrincipal($id)
     $p.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)

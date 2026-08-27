@@ -29,10 +29,12 @@ SYS_PIDFD_GETFD = 438
 
 
 def parse_int(value: str) -> int:
+    """Accept hex (0x…), octal (0o…), binary (0b…), or decimal strings."""
     return int(value, 0)
 
 
 def find_qemu_pid(vm_name: str) -> int:
+    """Resolve a libvirt VM name to the PID of its QEMU process via /proc scan."""
     result = subprocess.run(
         ["virsh", "qemu-monitor-command", vm_name,
          '{"execute":"query-status"}'],
@@ -55,6 +57,7 @@ def find_qemu_pid(vm_name: str) -> int:
 
 
 def find_vcpu_fd(pid: int, vcpu_index: int) -> int:
+    """Return the fd number for the given vCPU inside the QEMU process."""
     fd_dir = f"/proc/{pid}/fd"
     target_name = f"anon_inode:kvm-vcpu:{vcpu_index}"
 
@@ -73,6 +76,7 @@ def find_vcpu_fd(pid: int, vcpu_index: int) -> int:
 
 
 def pidfd_open(pid: int) -> int:
+    """Obtain a pidfd for the process; caller must os.close() the result."""
     libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
     result = libc.syscall(SYS_PIDFD_OPEN, pid, 0)
     if result < 0:
@@ -82,6 +86,7 @@ def pidfd_open(pid: int) -> int:
 
 
 def pidfd_getfd(pidfd: int, target_fd: int) -> int:
+    """Duplicate target_fd from the foreign process into this process's fd table."""
     libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
     result = libc.syscall(SYS_PIDFD_GETFD, pidfd, target_fd, 0)
     if result < 0:
@@ -91,6 +96,7 @@ def pidfd_getfd(pidfd: int, target_fd: int) -> int:
 
 
 def kvm_set_msr(vcpu_fd: int, msr_index: int, value: int) -> int:
+    """Issue KVM_SET_MSRS ioctl. Returns the number of MSRs successfully written."""
     nmsrs = 1
     pad = 0
     reserved = 0
@@ -102,6 +108,7 @@ def kvm_set_msr(vcpu_fd: int, msr_index: int, value: int) -> int:
 
 
 def main():
+    """CLI entry point; exits 0 on success, 1 if the MSR write failed."""
     parser = argparse.ArgumentParser(description="Write MSRs to a KVM guest vCPU")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--vm", help="libvirt VM name (finds QEMU PID automatically)")

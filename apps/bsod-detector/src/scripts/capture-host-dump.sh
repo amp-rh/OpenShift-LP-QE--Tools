@@ -36,6 +36,7 @@ function Warn () { echo "capture-host-dump: $*" >&2; true; }
 function Die ()  { Warn "$*"; exit 2; }
 function Have () { command -v "$1" >/dev/null 2>&1; }
 
+# Emit a JSON failure object to stdout and exit 1.
 function emit_failure () {
   local error="$1"; shift
   local warnsJson='[]'

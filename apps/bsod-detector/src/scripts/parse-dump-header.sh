@@ -57,6 +57,7 @@ done
 #   0x58    8     BugCheckParameter4 (uint64 LE)
 typeset -r pagedu64Sig="5041474544553634"
 
+# Read a little-endian uint32 at the given offset from a binary file.
 function ReadU32LE () {
   python3 -c "
 import struct, sys
@@ -67,6 +68,7 @@ with open('$1','rb') as f:
   true
 }
 
+# Read a little-endian uint64 at the given offset from a binary file.
 function ReadU64LE () {
   python3 -c "
 import struct, sys

@@ -68,6 +68,7 @@ if (-not (Test-Path $DumpPath)) { Fail "Dump file not found: $DumpPath" 2 }
 
 # 1. Locate cdb.exe.
 function Find-Cdb {
+    <# .SYNOPSIS Resolve cdb.exe from an explicit path, PATH, or standard Windows SDK install locations. #>
     param([string]$Explicit)
     if ($Explicit) {
         if (Test-Path $Explicit) { return $Explicit }
@@ -123,6 +124,7 @@ $log = Get-Content -Raw -Path $rawLog
 $codes = (Get-BsodData 'bugcheck-codes.json').codes
 
 function Get-Field {
+    <# .SYNOPSIS Extract a named field value from !analyze -v output; returns $null if absent. #>
     param([string]$Text, [string]$Name)
     $m = [regex]::Match($Text, "(?m)^\s*$([regex]::Escape($Name)):\s*(.+?)\s*$")
     if ($m.Success) { return $m.Groups[1].Value.Trim() } else { return $null }

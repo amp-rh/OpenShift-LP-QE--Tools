@@ -42,6 +42,7 @@ done
 
 function Log () { echo "[dry-run] $*" >&2; true; }
 
+# Resolve a bug check code to its KeBugCheckEx parameters from trigger-methods.json.
 function LookupParams () {
   python3 -c "
 import json, sys
@@ -58,6 +59,7 @@ print(' '.join(tm[code]['parameters']))
   true
 }
 
+# Poll SSH until the guest responds (8s intervals, 25 attempts).
 function WaitForSsh () {
   for _ in $(seq 1 25); do
     "$gssh" -c '"up"' 2>/dev/null | grep -q up && return 0
