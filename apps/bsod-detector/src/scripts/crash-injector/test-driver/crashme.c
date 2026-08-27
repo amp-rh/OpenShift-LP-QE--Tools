@@ -5,6 +5,7 @@
 #endif
 
 #define CRASHME_IOCTL CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define CRASHME_WRMSR_IOCTL CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 typedef struct _CRASHME_INPUT {
     ULONG BugCheckCode;
@@ -13,6 +14,19 @@ typedef struct _CRASHME_INPUT {
     ULONG_PTR Param3;
     ULONG_PTR Param4;
 } CRASHME_INPUT, *PCRASHME_INPUT;
+
+typedef struct _CRASHME_MSR_INPUT {
+    ULONG MsrIndex;
+    ULONG Reserved;
+    ULONG_PTR Value;
+} CRASHME_MSR_INPUT, *PCRASHME_MSR_INPUT;
+
+static __inline void CrashMeWriteMsr(ULONG msr, ULONG_PTR value)
+{
+    __asm__ __volatile__("wrmsr" : : "c"(msr),
+        "a"((ULONG)(value & 0xFFFFFFFF)),
+        "d"((ULONG)(value >> 32)));
+}
 
 static UNICODE_STRING DeviceName = RTL_CONSTANT_STRING(L"\\Device\\CrashMe");
 static UNICODE_STRING SymlinkName = RTL_CONSTANT_STRING(L"\\DosDevices\\CrashMe");
@@ -37,6 +51,13 @@ static NTSTATUS CrashMeDispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP I
     {
         PCRASHME_INPUT input = (PCRASHME_INPUT)Irp->AssociatedIrp.SystemBuffer;
         KeBugCheckEx(input->BugCheckCode, input->Param1, input->Param2, input->Param3, input->Param4);
+    }
+    else if (stack->Parameters.DeviceIoControl.IoControlCode == CRASHME_WRMSR_IOCTL &&
+             stack->Parameters.DeviceIoControl.InputBufferLength >= sizeof(CRASHME_MSR_INPUT))
+    {
+        PCRASHME_MSR_INPUT msrInput = (PCRASHME_MSR_INPUT)Irp->AssociatedIrp.SystemBuffer;
+        CrashMeWriteMsr(msrInput->MsrIndex, msrInput->Value);
+        status = STATUS_SUCCESS;
     }
 
     Irp->IoStatus.Status = status;

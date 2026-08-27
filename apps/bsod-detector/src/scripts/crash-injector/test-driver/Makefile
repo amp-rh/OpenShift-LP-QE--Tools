@@ -5,7 +5,7 @@ CC = x86_64-w64-mingw32-gcc
 # cross-compiling with MinGW on a non-Windows host. It is NOT used for
 # production builds. Structure layouts in the shim are approximate and
 # must be verified against real WDK headers before any ABI-sensitive use.
-WDK_INCLUDE ?= /usr/share/mingw-w64/include/ddk
+WDK_INCLUDE ?= /usr/x86_64-w64-mingw32/sys-root/mingw/include/ddk
 
 CFLAGS_USER = -Wall -Wextra -O2
 CFLAGS_KERN = -Wall -Wextra -O2 -I$(WDK_INCLUDE) \
