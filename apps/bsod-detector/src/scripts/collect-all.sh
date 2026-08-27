@@ -15,6 +15,7 @@
 #
 # Outputs: <out>/ containing:
 #   bsod-screenshot.png    - framebuffer capture (best frame from rapid burst)
+#   host-crash.dmp         - host-side WinDbg dump via elf2dmp (when VM preserved)
 #   collect-guest.json     - structured guest-side report
 #   host-signals.json      - host-side kernel log + hyperv evidence
 #   Minidump/*.dmp         - crash dump files copied from guest
@@ -53,12 +54,38 @@ mkdir -p "$outDir"
 
 function Log () { echo "[collect-all] $*" >&2; true; }
 
-# --- Phase 1: Capture BSOD screenshot (background, concurrent with reboot) ---
+# --- Phase 1: Capture BSOD screenshot (background) ---
 Log "starting framebuffer capture"
 "$scriptDir/capture-vm-screen.sh" --vm "$vm" --out "$outDir" --frames 30 --interval 0.3 &
 typeset capturePid=$!
 
-# --- Phase 2: Wait for VM reboot (SSH becomes reachable again) ---
+# --- Phase 2: Host-side crash dump (if domain is preserved after crash) ---
+typeset isHostDumpCollected=false
+typeset domState
+domState="$(virsh domstate "${vm}" 2>/dev/null)" || domState="unknown"
+Log "domain state: ${domState}"
+
+if [[ "${domState}" == "crashed" || "${domState}" == "paused" ]]; then
+  kill "${capturePid}" 2>/dev/null || true
+  wait "${capturePid}" 2>/dev/null || true
+
+  Log "domain is preserved; attempting host-side memory dump via elf2dmp"
+  if "${scriptDir}/capture-host-dump.sh" --vm "${vm}" --out "${outDir}" > "${outDir}/capture-host-dump.json"; then
+    if [[ -f "${outDir}/host-crash.dmp" ]]; then
+      isHostDumpCollected=true
+      Log "host-side dump captured: host-crash.dmp"
+    fi
+  else
+    Log "WARNING: host-side dump failed (see capture-host-dump.json for details)"
+  fi
+
+  Log "destroying and restarting domain to trigger guest reboot"
+  virsh destroy "${vm}" 2>/dev/null || true
+  sleep 2
+  virsh start "${vm}" 2>/dev/null || Log "WARNING: could not restart domain '${vm}'"
+fi
+
+# --- Phase 3: Wait for VM reboot (SSH becomes reachable again) ---
 Log "waiting for guest reboot (timeout=${timeout}s)"
 typeset rebooted=0
 typeset elapsed=0
@@ -72,10 +99,12 @@ while [[ $elapsed -lt $timeout ]]; do
   elapsed=$((elapsed + pollInterval))
 done
 
-kill $capturePid 2>/dev/null || true
-wait $capturePid 2>/dev/null || true
+if [[ "${domState}" != "crashed" && "${domState}" != "paused" ]]; then
+  kill "${capturePid}" 2>/dev/null || true
+  wait "${capturePid}" 2>/dev/null || true
+fi
 
-# --- Phase 3: Select best screenshot frame ---
+# --- Phase 4: Select best screenshot frame ---
 typeset bestFrame=""
 if compgen -G "${outDir}/bsod-frame-*.png" &>/dev/null; then
   bestFrame="$(ls -S "${outDir}"/bsod-frame-*.png 2>/dev/null | head -n1)" || true
@@ -88,9 +117,9 @@ else
 fi
 rm -f "$outDir"/bsod-frame-*.png
 
-# --- Phase 4: Collect guest-side evidence (if VM rebooted) ---
+# --- Phase 5: Collect guest-side evidence (if VM rebooted) ---
 typeset guestCollected=false
-if [[ "$rebooted" == 1 ]]; then
+if [[ "${rebooted}" == 1 ]]; then
   Log "guest is up; collecting guest-side evidence"
   typeset guestOut='C:/bsod-detector/output/collect-current'
   typeset guestCommandOk=false
@@ -121,11 +150,11 @@ else
   Log "WARNING: guest did not reboot within ${timeout}s; guest-side collection skipped"
 fi
 
-# --- Phase 5: Collect host-side signals ---
+# --- Phase 6: Collect host-side signals ---
 Log "collecting host-side signals"
 "$scriptDir/collect-host-signals.sh" --vm "$vm" > "$outDir/host-signals.json" 2>/dev/null || true
 
-# --- Phase 6: Assemble evidence summary manifest ---
+# --- Phase 7: Assemble evidence summary manifest ---
 Log "writing evidence summary"
 typeset hasScreenshot=false; [[ -f "$outDir/bsod-screenshot.png" ]] && hasScreenshot=true
 typeset hasHostSignals=false; [[ -s "$outDir/host-signals.json" ]] && hasHostSignals=true
@@ -141,13 +170,16 @@ if [[ -f "${outDir}/MEMORY.DMP" ]]; then
   dumpFiles+=("MEMORY.DMP")
 fi
 
-python3 - "$outDir" "$hasScreenshot" "$guestCollected" "$hasHostSignals" "${dumpFiles[@]}" <<'PY'
+typeset hasHostDump=false; [[ -f "${outDir}/host-crash.dmp" ]] && hasHostDump=true
+
+python3 - "${outDir}" "${hasScreenshot}" "${guestCollected}" "${hasHostSignals}" "${hasHostDump}" "${dumpFiles[@]}" <<'PY'
 import json, sys, os
 out_dir = sys.argv[1]
 has_screenshot = sys.argv[2] == "true"
 guest_collected = sys.argv[3] == "true"
 has_host_signals = sys.argv[4] == "true"
-dump_files = sys.argv[5:] if len(sys.argv) > 5 else []
+has_host_dump = sys.argv[5] == "true"
+dump_files = sys.argv[6:] if len(sys.argv) > 6 else []
 
 crash_info = None
 if guest_collected:
@@ -158,15 +190,25 @@ if guest_collected:
     except (json.JSONDecodeError, FileNotFoundError):
         pass
 
+host_dump_info = None
+if has_host_dump:
+    try:
+        with open(os.path.join(out_dir, "capture-host-dump.json")) as f:
+            host_dump_info = json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        pass
+
 summary = {
     "ok": True,
     "collectedAt": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
     "artifacts": {
         "screenshot": "bsod-screenshot.png" if has_screenshot else None,
+        "hostDump": "host-crash.dmp" if has_host_dump else None,
         "guestReport": "collect-guest.json" if guest_collected else None,
         "hostSignals": "host-signals.json" if has_host_signals else None,
         "dumpFiles": dump_files,
     },
+    "hostDumpDetails": host_dump_info,
     "crash": crash_info,
 }
 
