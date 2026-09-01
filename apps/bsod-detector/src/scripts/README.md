@@ -255,6 +255,160 @@ export LIBVIRT_DEFAULT_URI=qemu:///system
 
 ---
 
+## KubeVirt cluster tooling (guest-agent, no SSH)
+
+On a KubeVirt/OpenShift cluster the VM has no passt SSH; it is driven through the
+**qemu-guest-agent** spoken by `virsh` inside the VM's `virt-launcher` pod. These
+scripts were used to reproduce the local BSOD runs (0xEF CRITICAL_PROCESS_DIED and
+0xD1 DRIVER_IRQL_NOT_LESS_OR_EQUAL) end-to-end on the goldman-sachs cluster VM
+`hjoshi-win2022` (ns `windows-bsod`). `guest-exec` runs as `nt authority\system`.
+
+### guest-agent.py  _(host, python3 + oc)_
+
+**Purpose:** Driver for the qemu-guest-agent via `oc exec <virt-launcher> -- virsh
+qemu-agent-command <ns>_<vm>`. Subcommands: `ping`, `exec`, `psfile` (upload+run a
+`.ps1`), `put`, `get` (seek-based, retriable download). Importable helpers
+(`guest_exec`, `guest_put`, `guest_get`) for scripting a full run.
+
+**Config (all optional — target is auto-resolved):** `GA_VM` (VM name), `GA_NS`
+(namespace), `GA_DOM` (domain, defaults to `<ns>_<vm>`), `GA_POD` (defaults to the
+running `virt-launcher-<vm>-*` pod resolved from the cluster — no stale pod
+suffixes). With a single VMI on the cluster you can run with no env vars at all;
+otherwise set `GA_VM` (and `GA_NS` if ambiguous).
+
+**Notes:** read chunks are capped by the QMP payload limit (2MB ok, 4MB fails);
+`get` seeks per chunk and retries so a truncated response is recoverable.
+
+### stage-toolkit.ps1  _(guest)_
+
+**Purpose:** Expand the uploaded `bsod-src.zip` into `C:\bsod-detector` so the
+in-guest collectors resolve. (Host side: `zip -r bsod-src.zip src` then
+`guest-agent.py put bsod-src.zip C:\Windows\Temp\bsod-src.zip`.)
+
+### probe-dump-config.ps1  _(guest)_
+
+**Purpose:** Read-only snapshot of CrashControl settings, dump inventory, free
+space, RAM, last boot time, toolkit-staged flag. Pre/post-test sanity check.
+
+### clear-dumps.ps1  _(guest, elevated)_
+
+**Purpose:** Delete existing minidumps + MEMORY.DMP before a run so the evidence
+package holds only the new crash.
+
+### trigger-bsod.ps1  _(guest, elevated, synchronous)_
+
+**Purpose:** Driver-free BSOD → 0x000000EF CRITICAL_PROCESS_DIED. Marks itself
+critical (`RtlSetProcessIsCritical`) then `TerminateProcess((IntPtr)-1)`. Fire via
+`guest_exec(..., wait=False)` — the guest dies mid-call.
+
+### diag-critical-api.ps1  _(guest)_
+
+**Purpose:** Validate the `RtlSetProcessIsCritical` P/Invoke path (NTSTATUS return
+codes) WITHOUT crashing — use when a trigger is a silent no-op.
+
+### setup-notmyfault.ps1  _(guest, internet)_
+
+**Purpose:** Download Sysinternals NotMyFault to `C:\Temp\nmf`. Crash with
+`notmyfaultc64.exe /accepteula /crash 0x01` → 0xD1 DRIVER_IRQL_NOT_LESS_OR_EQUAL
+(faulting `myfault.sys`). A driver-based alternative to crashme.sys.
+
+### install-debuggers.ps1  _(guest, internet, ~5 min)_
+
+**Purpose:** Install `cdb` (Windows SDK debuggers) so `analyze-dump.ps1` /
+`collect-guest.ps1 -Symbolize` can symbolize. Drive with a long `poll_timeout`.
+
+### compress-dump.ps1  _(guest)_
+
+**Purpose:** Stage a shared-read copy of the locked `MEMORY.DMP` and zip it (~14%)
+for a smaller, more reliable pull via `guest-agent.py get`; prints sizes + sha256.
+
+### Execution order (cluster run)
+
+```bash
+export KUBECONFIG=<cluster kubeconfig>          # e.g. goldman-sachs
+export GA_VM=<vm> GA_NS=<ns>                     # optional; omit if there is a single VMI
+zip -r /tmp/bsod-src.zip src                     # from apps/bsod-detector
+python3 src/scripts/guest-agent.py put /tmp/bsod-src.zip 'C:\Windows\Temp\bsod-src.zip'
+python3 src/scripts/guest-agent.py psfile src/scripts/stage-toolkit.ps1
+python3 src/scripts/guest-agent.py psfile src/scripts/probe-dump-config.ps1   # confirm CrashDumpEnabled=7
+python3 src/scripts/guest-agent.py psfile src/scripts/clear-dumps.ps1
+# --- trigger (async) ---   EF: trigger-bsod.ps1   |   D1: setup-notmyfault.ps1 then notmyfaultc64 /crash 0x01
+# --- while it crashes: loop `virsh screenshot` inside the pod to catch the blue screen ---
+python3 src/scripts/guest-agent.py exec powershell.exe -NoProfile -File 'C:\bsod-detector\src\scripts\collect-guest.ps1'
+python3 src/scripts/guest-agent.py get 'C:\Windows\Minidump\<file>.dmp' ./out/minidump.dmp
+bash src/scripts/parse-dump-header.sh ./out/minidump.dmp                       # offline cross-check
+# deep analysis (optional): install-debuggers.ps1 -> analyze-dump.ps1 / collect-guest.ps1 -Symbolize
+# full dump (optional): compress-dump.ps1 -> guest-agent.py get MEMORY.DMP.zip
+```
+
+### watch-crash.sh  _(host, bash + oc)_ — natural crash, NO trigger
+
+**Purpose:** Watch a KubeVirt Windows VM for a **naturally-occurring** BSOD/freeze
+and auto-capture evidence with **no trigger at all** — no NotMyFault, no
+`trigger-bsod.ps1`. This is the path for crashes the workload/config produces on
+its own, notably the **TLB-flush scenario**: the Intel split-lock `#AC` raised
+during the Hyper-V *enlightened TLB-flush* hypercall on an unmitigated VM →
+`HYPERVISOR_ERROR (0x00020001)`, which typically **hard-freezes and writes no
+minidump**.
+
+It polls the `qemu-guest-agent` (via `guest-agent.py`, no SSH). When the agent
+stops answering while the domain is still alive (`running`/`paused`/`crashed`/
+`pmsuspended` — a **pvpanic** device can move a bugcheck out of `running`) it, in
+one shot:
+
+1. bursts `virsh screenshot` inside the `virt-launcher` pod and flags the blue
+   screen by size (solid-colour frames compress to ~36 KB, vs ~874 KB desktop and
+   ~3 KB DPMS-black — see the `SS_MIN`/`SS_MAX` band);
+2. captures **host-side signals** — worker-node `dmesg` (`oc debug node`) + domain
+   XML → `collect-host-signals.sh`. **This is the only place the TLB-flush /
+   split-lock `#AC` is visible**; it never appears in the guest dump;
+3. if the guest reboots, runs `collect-guest.ps1`, pulls the newest minidump and
+   cross-checks it offline with `parse-dump-header.sh`; if it stays frozen (typical
+   for `HYPERVISOR_ERROR`) it records the hard-freeze and stops.
+
+**Inputs:** `--ns <namespace>` and `--vm <name>` are **optional** — with a single
+VMI on the cluster both are auto-detected; pass them only to disambiguate. `--out
+<dir>`, `--interval <s>` (poll cadence, default 5),
+`--miss <n>` (consecutive missed pings = crash, default 3), `--node <worker>`
+(auto-detected from the VMI if omitted), `--reboot-wait <s>` (default 300),
+`--burst <n>` (screenshot frames, default 25).
+
+**Requires:** `oc`, `python3`, `jq`, and (same dir) `guest-agent.py`,
+`collect-host-signals.sh`, `parse-dump-header.sh`. The toolkit must already be
+staged in the guest (`stage-toolkit.ps1`) for the `collect-guest` step. The VM
+must have a working `qemu-guest-agent`.
+
+**Output package** (in `--out`): `bsod-screenshot.png`, `host-signals.json`,
+`dom.xml`, `kern.log`, `collect-guest.json`, `Minidump/*.dmp` +
+`parse-dump-header.json` (only if it reboots), and **`evidence-summary.json`**
+tying it together: `{ ok, mode:"natural", crashDetected, detectedAt,
+domStateAtCrash, guestRebooted, hardFreeze, bugCheck, splitLockDetected,
+artifacts }`.
+
+**Prerequisites for the TLB-flush crash to actually occur** (environment, not this
+script — `watch-crash.sh` only detects and captures, it does not induce the crash):
+- the VM runs the **unmitigated** Hyper-V enlightenment config — `<hyperv>` with
+  `tlbflush` **and** `ipi` enabled (verify in `dom.xml` / `host-signals.json`);
+- the worker node has split-lock detection on: `split_lock_detect=warn` or `on`
+  (otherwise the `#AC` line never appears, regardless of the crash).
+
+**Usage:**
+```bash
+export KUBECONFIG=<cluster kubeconfig>          # e.g. goldman-sachs
+# stage the toolkit once (needed only for the post-reboot collect-guest step);
+# GA_VM/GA_NS are optional — omit them if there is a single VMI on the cluster:
+export GA_VM=<vm> GA_NS=<ns>
+zip -r /tmp/bsod-src.zip src && \
+  python3 src/scripts/guest-agent.py put /tmp/bsod-src.zip 'C:\Windows\Temp\bsod-src.zip' && \
+  python3 src/scripts/guest-agent.py psfile src/scripts/stage-toolkit.ps1
+
+# then just watch — run the workload/TLB scenario in parallel and wait for it to crash.
+# --ns/--vm are optional (auto-detected with a single VMI):
+./src/scripts/watch-crash.sh --out ./output/natural
+```
+
+---
+
 ## Testing
 
 Unit tests live in `test/` and use [bats-core](https://github.com/bats-core/bats-core).
