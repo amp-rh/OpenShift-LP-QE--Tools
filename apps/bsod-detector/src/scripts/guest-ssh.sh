@@ -15,16 +15,16 @@
 # back to GUEST_PASS via sshpass.
 #
 # Usage:
-#   vm/guest-ssh.sh -c 'Get-Date; $env:COMPUTERNAME'     # inline PowerShell
-#   vm/guest-ssh.sh -f path/to/script.ps1 [-- -Arg val]  # run a .ps1 file
-#   echo '<ps>' | vm/guest-ssh.sh                        # PowerShell on stdin
+#   src/scripts/guest-ssh.sh -c 'Get-Date; $env:COMPUTERNAME'     # inline PowerShell
+#   src/scripts/guest-ssh.sh -f path/to/script.ps1 [-- -Arg val]  # run a .ps1 file
+#   echo '<ps>' | src/scripts/guest-ssh.sh                        # PowerShell on stdin
 set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 GUEST_USER="${GUEST_USER:-Administrator}"
 VM_NAME="${VM_NAME:-bsod-test}"
 typeset scriptDir; scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GUEST_KEY="${GUEST_KEY:-$scriptDir/../.ssh/bsod-test}"
+GUEST_KEY="${GUEST_KEY:-$scriptDir/../../.ssh/bsod-test}"   # src/scripts -> src -> app root/.ssh
 
 function Die () { echo "guest-ssh: $*" >&2; exit 1; }
 

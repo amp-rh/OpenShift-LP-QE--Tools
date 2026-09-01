@@ -69,10 +69,12 @@ if (-not $OutputDir) {
 }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
-# 2. Copy dump files out to the output dir.
+# 2. Copy dump files out to the output dir. Honor the VM's configured dump paths
+#    (DumpFile / MinidumpDir / DedicatedDumpFile) rather than assuming the default
+#    %SystemRoot% location -- a naturally-crashed production VM may relocate them.
 $dumpFiles = New-Object System.Collections.Generic.List[string]
-$miniDir = Join-Path $env:SystemRoot 'Minidump'
-$memDmp  = Join-Path $env:SystemRoot 'MEMORY.DMP'
+$paths   = Get-DumpPaths
+$miniDir = $paths.MinidumpDir
 if (Test-Path $miniDir) {
     foreach ($m in Get-ChildItem (Join-Path $miniDir '*.dmp') -ErrorAction SilentlyContinue) {
         $dest = Join-Path $OutputDir (Join-Path 'Minidump' $m.Name)
@@ -81,12 +83,16 @@ if (Test-Path $miniDir) {
         $dumpFiles.Add((Join-Path 'Minidump' $m.Name))
     }
 }
-if (Test-Path $memDmp) {
-    Copy-Item $memDmp (Join-Path $OutputDir 'MEMORY.DMP') -Force
-    $dumpFiles.Add('MEMORY.DMP')
+# Full/kernel dump: prefer the configured DumpFile, then a DedicatedDumpFile.
+foreach ($full in @($paths.DumpFile, $paths.DedicatedDumpFile)) {
+    if ($full -and (Test-Path $full)) {
+        Copy-Item $full (Join-Path $OutputDir 'MEMORY.DMP') -Force
+        $dumpFiles.Add('MEMORY.DMP')
+        break
+    }
 }
 if ($dumpFiles.Count -eq 0) {
-    $warnings.Add('No dump files found (Minidump\*.dmp or MEMORY.DMP). Check crash-dump configuration (configure-dumps.ps1).')
+    $warnings.Add("No dump files found (looked in '$miniDir' and '$($paths.DumpFile)'). Check crash-dump configuration (configure-dumps.ps1).")
 }
 
 # 3. Bug-check code: read the WER-SystemErrorReporting BugCheck event (System/1001).

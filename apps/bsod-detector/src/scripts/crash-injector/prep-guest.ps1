@@ -59,8 +59,21 @@ foreach ($k in $desired.Keys) {
         $rebootRecommended = $true
     }
 }
+# Pin the dump-file paths (REG_EXPAND_SZ) so a dump always lands where the
+# collectors look, matching data/crash-control.json's recommended values.
+$desiredPaths = @{
+    DumpFile    = '%SystemRoot%\MEMORY.DMP'
+    MinidumpDir = '%SystemRoot%\Minidump'
+}
+foreach ($k in $desiredPaths.Keys) {
+    $cur = (Get-ItemProperty -Path $cc -Name $k -ErrorAction SilentlyContinue).$k
+    if ($cur -ne [Environment]::ExpandEnvironmentVariables($desiredPaths[$k])) {
+        New-ItemProperty -Path $cc -Name $k -Value $desiredPaths[$k] -PropertyType ExpandString -Force | Out-Null
+        $rebootRecommended = $true
+    }
+}
 $crashControl = Get-ItemProperty -Path $cc |
-    Select-Object CrashDumpEnabled, AlwaysKeepMemoryDump, Overwrite, LogEvent, AutoReboot
+    Select-Object CrashDumpEnabled, AlwaysKeepMemoryDump, Overwrite, LogEvent, AutoReboot, DumpFile, MinidumpDir
 
 # --- 2. Page file: switch to system-managed so a kernel dump always fits -----
 $csItem = Get-CimInstance Win32_ComputerSystem

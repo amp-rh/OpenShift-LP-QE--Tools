@@ -18,7 +18,20 @@
     C:\Temp\MEMORY.DMP.zip  (+ orig/zip sizes and sha256 to stdout)
 #>
 $ErrorActionPreference='Stop'
-$src='C:\Windows\MEMORY.DMP'
+# Resolve the configured full-dump path (a naturally-crashed VM may not use the
+# default C:\Windows\MEMORY.DMP): prefer CrashControl DumpFile, then a
+# DedicatedDumpFile, else the OS default.
+$cc = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl' -ErrorAction SilentlyContinue
+$src = $null
+foreach ($name in 'DumpFile','DedicatedDumpFile') {
+  if ($cc -and ($cc.PSObject.Properties.Name -contains $name) -and $cc.$name) {
+    $p = [Environment]::ExpandEnvironmentVariables($cc.$name)
+    if (Test-Path $p) { $src = $p; break }
+  }
+}
+if (-not $src) { $src = Join-Path $env:SystemRoot 'MEMORY.DMP' }
+$srcDir=Split-Path -Parent $src
+$srcName=Split-Path -Leaf $src
 $tmp='C:\Temp\MEMORY.DMP'
 $zip='C:\Temp\MEMORY.DMP.zip'
 foreach($f in @($tmp,$zip)){ if(Test-Path $f){ Remove-Item $f -Force } }
@@ -27,7 +40,10 @@ try {
   Copy-Item $src $tmp -Force
 } catch {
   Write-Output "Copy-Item locked, trying robocopy /B ..."
-  robocopy 'C:\Windows' 'C:\Temp' 'MEMORY.DMP' /B /NP /NFL /NDL /NJH /NJS | Out-Null
+  robocopy $srcDir 'C:\Temp' $srcName /B /NP /NFL /NDL /NJH /NJS | Out-Null
+  if ((Test-Path (Join-Path 'C:\Temp' $srcName)) -and $srcName -ne 'MEMORY.DMP') {
+    Move-Item (Join-Path 'C:\Temp' $srcName) $tmp -Force
+  }
 }
 if (-not (Test-Path $tmp)) { throw "could not stage a readable copy of MEMORY.DMP" }
 Compress-Archive -Path $tmp -DestinationPath $zip -CompressionLevel Optimal

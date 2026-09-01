@@ -8,7 +8,7 @@
 # model: revert -> trigger BSOD -> collect -> revert. No per-experiment VM clones.
 #
 # Usage:
-#   vmctl.sh define        # (re)define the domain from vm/bsod-test.domain.xml
+#   vmctl.sh define        # (re)define the domain from src/scripts/bsod-test.domain.xml
 #   vmctl.sh snapshot      # create/refresh the 'clean-baseline' snapshot
 #   vmctl.sh revert        # revert to 'clean-baseline' (discard crash state)
 #   vmctl.sh start|stop|kill|console|status|list

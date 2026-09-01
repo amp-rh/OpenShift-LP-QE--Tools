@@ -123,7 +123,7 @@ driver.
 ```bash
 # From the host, sweep all 19 defined codes:
 export LIBVIRT_DEFAULT_URI=qemu:///system
-./vm/sweep-crashme.sh
+./src/scripts/crash-injector/sweep-crashme.sh
 
 # Or drive a single code manually:
 # 1. Revert to known-good state
@@ -260,7 +260,7 @@ recovers the raw dump files.
 
 ### Guest prerequisites (one-time setup)
 
-These are set by `vm/prep-guest.ps1` and baked into the `clean-baseline` snapshot:
+These are set by `src/scripts/crash-injector/prep-guest.ps1` and baked into the `clean-baseline` snapshot:
 
 | Setting | Value | Why |
 |---|---|---|
@@ -304,8 +304,8 @@ secrets, credentials, or PII.
 All 19 bug-check codes in
 [`data/trigger-methods.json`](../src/data/trigger-methods.json) have been verified
 end-to-end on Windows Server 2025 (build 26100) with Driver Verifier enabled.
-All use the KeBugCheckEx test driver (`src/test-driver/crashme.sys`) invoked via
-`vm/sweep-crashme.sh`.
+All use the KeBugCheckEx test driver (`src/scripts/crash-injector/test-driver/crashme.sys`) invoked via
+`src/scripts/crash-injector/sweep-crashme.sh`.
 
 | Code | Name |
 |---|---|

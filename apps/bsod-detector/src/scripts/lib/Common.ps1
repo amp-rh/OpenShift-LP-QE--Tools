@@ -5,6 +5,7 @@
 # Provides:
 #   - $DataDir / $RepoRoot path resolution
 #   - Get-BsodData      : load a data/*.json source-of-truth file
+#   - Get-DumpPaths     : resolve where this guest actually writes crash dumps
 #   - Write-JsonResult  : emit a single JSON object to stdout (the script contract)
 #   - Fail              : write an error result to stdout and exit non-zero
 #
@@ -28,6 +29,46 @@ function Get-BsodData {
     $path = Join-Path $script:DataDir $Name
     if (-not (Test-Path $path)) { throw "Data file not found: $path" }
     Get-Content -Raw -Path $path | ConvertFrom-Json
+}
+
+function Get-DumpPaths {
+    <#
+    .SYNOPSIS
+        Resolve where this Windows guest actually writes crash dumps.
+    .DESCRIPTION
+        Reads the live CrashControl config (DumpFile / MinidumpDir /
+        DedicatedDumpFile) and falls back to the OS defaults when a value is unset.
+        For a NATURALLY-occurring BSOD we never pre-configured the VM, so the dump
+        may not be at the default %SystemRoot% location (enterprise images sometimes
+        relocate DumpFile or use a DedicatedDumpFile on another volume). Collectors
+        should look where the VM is configured to write, not assume C:\Windows.
+    .OUTPUTS
+        [pscustomobject] with DumpFile, MinidumpDir, DedicatedDumpFile (or $null).
+    #>
+    $ccPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
+    $cc = Get-ItemProperty -Path $ccPath -ErrorAction SilentlyContinue
+
+    function Read-CcValue {
+        param([string]$Name)
+        if ($cc -and ($cc.PSObject.Properties.Name -contains $Name)) {
+            $v = $cc.$Name
+            if ($v -is [string] -and $v.Trim()) {
+                return [Environment]::ExpandEnvironmentVariables($v)
+            }
+        }
+        return $null
+    }
+
+    $dumpFile = Read-CcValue 'DumpFile'
+    if (-not $dumpFile) { $dumpFile = Join-Path $env:SystemRoot 'MEMORY.DMP' }
+    $miniDir = Read-CcValue 'MinidumpDir'
+    if (-not $miniDir) { $miniDir = Join-Path $env:SystemRoot 'Minidump' }
+
+    [pscustomobject]@{
+        DumpFile          = $dumpFile
+        MinidumpDir       = $miniDir
+        DedicatedDumpFile = Read-CcValue 'DedicatedDumpFile'
+    }
 }
 
 function Write-JsonResult {

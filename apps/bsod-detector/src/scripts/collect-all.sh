@@ -6,7 +6,7 @@
 # (event logs, dumps, system context), and host-side signals (kernel log,
 # hypervisor config).
 #
-# Invoked by test harnesses (vm/run-dry-run.sh) or by a CI post-step after any
+# Invoked by test harnesses (src/scripts/crash-injector/run-dry-run.sh) or by a CI post-step after any
 # test run that may have triggered a BSOD.
 #
 # Usage:

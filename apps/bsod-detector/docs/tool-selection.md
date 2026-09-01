@@ -4,7 +4,7 @@ Which tools we use to trigger and capture BSOD events, and why.
 
 ## Trigger: KeBugCheckEx test driver
 
-The CrashMe driver (`src/test-driver/crashme.sys`) calls `KeBugCheckEx` directly
+The CrashMe driver (`src/scripts/crash-injector/test-driver/crashme.sys`) calls `KeBugCheckEx` directly
 with a caller-specified stop code and 4 parameters. This gives full control over
 which bug-check code is produced, without depending on third-party tools or
 complex fault injection paths.

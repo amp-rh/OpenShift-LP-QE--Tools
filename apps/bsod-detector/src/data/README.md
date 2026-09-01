@@ -20,8 +20,8 @@ page-file requirements.
 ### `trigger-methods.json`
 How each bug-check code is triggered in the test harness: method, parameters,
 and verification status. All 19 codes use the KeBugCheckEx driver
-(`src/test-driver/crashme.sys`).
-- **Consumers:** `vm/sweep-crashme.sh` reads trigger parameters. Any reporting
+(`src/scripts/crash-injector/test-driver/crashme.sys`).
+- **Consumers:** `src/scripts/crash-injector/sweep-crashme.sh` reads trigger parameters. Any reporting
   step can check `verified` status.
 
 ### `event-sources.json`

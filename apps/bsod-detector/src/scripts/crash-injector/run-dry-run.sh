@@ -8,11 +8,11 @@
 #   4. delegate to src/scripts/collect-all.sh for evidence collection
 #   5. print summary
 #
-# All guest interaction goes through vm/guest-ssh.sh (SSH key auth). Never
+# All guest interaction goes through src/scripts/guest-ssh.sh (SSH key auth). Never
 # point this at anything but a disposable/snapshotted test VM.
 #
 # Usage:
-#   vm/run-dry-run.sh [--code <hex>] [--no-revert] [--out <dir>]
+#   src/scripts/crash-injector/run-dry-run.sh [--code <hex>] [--no-revert] [--out <dir>]
 #
 # Defaults: code=0x19 (BAD_POOL_HEADER), revert=yes,
 #           out=<repo>/output/dryrun-<timestamp>
@@ -20,9 +20,9 @@ set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 typeset here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-typeset repo; repo="$(cd "$here/.." && pwd)"
+typeset repo; repo="$(cd "$here/../../.." && pwd)"   # crash-injector -> scripts -> src -> app root
 VM_NAME="${VM_NAME:-bsod-test}"
-typeset gssh="$here/guest-ssh.sh"
+typeset gssh="$repo/src/scripts/guest-ssh.sh"
 SNAPSHOT="${SNAPSHOT:-crashme-installed}"
 
 typeset code="0x19"

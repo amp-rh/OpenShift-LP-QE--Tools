@@ -4,6 +4,16 @@ Catalog of executable tooling. Each script does one job, takes well-defined inpu
 
 All scripts are PowerShell 5.1+ (Windows) and read their lookup tables from [`../data/`](../data/README.md) — no table is duplicated inside a script. Tool selection rationale is in [`../../docs/tool-selection.md`](../../docs/tool-selection.md).
 
+## Layout
+
+- **This folder** is *The Catcher*: detect / capture / analyze a real,
+  naturally-occurring BSOD/freeze on an OCP KubeVirt VM, plus the shared
+  access/lifecycle helpers (`guest-agent.py`, `guest-ssh.sh`, `vmctl.sh`).
+- **[`crash-injector/`](crash-injector/README.md)** is *The Pitcher*: destructive,
+  test-only scripts that intentionally crash a disposable guest to validate the
+  Catcher. Never point them at production.
+- A per-file catalog lives in [`../../MANIFEST.md`](../../MANIFEST.md).
+
 ## Pipeline
 
 Typical test run (guest unless noted):
@@ -29,12 +39,12 @@ source-of-truth JSON (`Get-BsodData`), emits the single stdout JSON result
 Status: `collect-guest.ps1` is **implemented and verified** against a live
 Windows Server 2025 guest. All 19 bug-check codes in `data/trigger-methods.json`
 have been verified end-to-end using the KeBugCheckEx test driver
-(`vm/sweep-crashme.sh`). `configure-dumps.ps1` (guest, CrashControl registry)
+(`src/scripts/crash-injector/sweep-crashme.sh`). `configure-dumps.ps1` (guest, CrashControl registry)
 and `collect-from-host.ps1` (Hyper-V host-side detect + offline VHDX/LiveKd
 dump recovery) are **implemented**. For the Linux/KVM (KubeVirt) target the
 freeze-detect + offline-recovery job is covered by `collect-from-host.sh` (the
 libvirt-native sibling) on top of `host-tools/`, and dump configuration by
-`vm/prep-guest.ps1`.
+`src/scripts/crash-injector/prep-guest.ps1`.
 
 ### configure-dumps.ps1  _(guest, elevated)_
 
@@ -174,7 +184,7 @@ will catch them.
 These live under `vm/` rather than `scripts/` because they run on the Linux/KVM
 host, not inside the Windows guest.
 
-### vm/sweep-crashme.sh  _(host, bash)_
+### src/scripts/crash-injector/sweep-crashme.sh  _(host, bash)_
 
 **Purpose:** Automated verification sweep of all KeBugCheckEx-triggered
 bug-check codes. Iterates through every code in `data/trigger-methods.json`,
@@ -193,7 +203,7 @@ pass/fail per code with the observed bug-check code and dump file list.
 **Usage:**
 ```bash
 export LIBVIRT_DEFAULT_URI=qemu:///system
-./vm/sweep-crashme.sh
+./src/scripts/crash-injector/sweep-crashme.sh
 ```
 
 ### src/scripts/collect-host-signals.sh  _(host, bash)_

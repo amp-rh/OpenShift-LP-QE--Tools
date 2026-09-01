@@ -3,7 +3,7 @@
 load test-helper
 
 @test "sweep-crashme CODES array has 19 entries" {
-  count=$(grep -cE '^\s+"0x[0-9a-fA-F]+ ' "$REPO_ROOT/vm/sweep-crashme.sh")
+  count=$(grep -cE '^\s+"0x[0-9a-fA-F]+ ' "$REPO_ROOT/src/scripts/crash-injector/sweep-crashme.sh")
   [ "$count" -eq 19 ]
 }
 
@@ -15,12 +15,12 @@ load test-helper
     if [ "$fields" -ne 5 ]; then
       bad="BAD: $line (got $fields fields)"
     fi
-  done < <(grep -E '^\s+"0x[0-9a-fA-F]+ ' "$REPO_ROOT/vm/sweep-crashme.sh")
+  done < <(grep -E '^\s+"0x[0-9a-fA-F]+ ' "$REPO_ROOT/src/scripts/crash-injector/sweep-crashme.sh")
   [ -z "$bad" ]
 }
 
 @test "sweep-crashme codes match trigger-methods.json codes" {
-  sweep_codes=$(grep -oP '^\s+"(0x[0-9a-fA-F]+)' "$REPO_ROOT/vm/sweep-crashme.sh" | \
+  sweep_codes=$(grep -oP '^\s+"(0x[0-9a-fA-F]+)' "$REPO_ROOT/src/scripts/crash-injector/sweep-crashme.sh" | \
     sed 's/.*"//;s/^0x/0x/' | tr '[:lower:]' '[:upper:]' | sed 's/^0X/0x/' | sort)
 
   json_codes=$(jq -r '.codes | keys[]' "$DATA_DIR/trigger-methods.json" | sort)
@@ -35,7 +35,7 @@ import json, re, sys
 with open('$DATA_DIR/trigger-methods.json') as f:
     tm = json.load(f)['codes']
 
-with open('$REPO_ROOT/vm/sweep-crashme.sh') as f:
+with open('$REPO_ROOT/src/scripts/crash-injector/sweep-crashme.sh') as f:
     script = f.read()
 
 pattern = re.compile(r'\"(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\"')

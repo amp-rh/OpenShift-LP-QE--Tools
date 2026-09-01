@@ -2,7 +2,7 @@
 set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI=qemu:///system
-typeset repoDir; repoDir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+typeset repoDir; repoDir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"  # crash-injector -> scripts -> src -> app root
 cd "$repoDir"
 
 typeset -a codes=(
@@ -30,7 +30,7 @@ typeset -a codes=(
 function WaitSsh () {
   typeset max="${1:-30}"
   for _i in $(seq 1 "$max"); do
-    ./vm/guest-ssh.sh -c '"up"' 2>/dev/null | grep -q up && return 0
+    ./src/scripts/guest-ssh.sh -c '"up"' 2>/dev/null | grep -q up && return 0
     sleep 8
   done
   return 1
@@ -42,7 +42,7 @@ function CollectResult () {
   mkdir -p "$sweepDir"
 
   typeset json
-  json=$(./vm/guest-ssh.sh -c "& C:\\bsod-detector\\scripts\\collect-guest.ps1 -OutputDir C:\\bsod-detector\\output\\sweep-${codeHex}" 2>&1) || true
+  json=$(./src/scripts/guest-ssh.sh -c "& C:\\bsod-detector\\scripts\\collect-guest.ps1 -OutputDir C:\\bsod-detector\\output\\sweep-${codeHex}" 2>&1) || true
   if [[ -n "$json" ]]; then
     echo "$json" > "${sweepDir}/collect-guest.json"
     echo "$json"
@@ -75,7 +75,7 @@ for entry in "${codes[@]}"; do
 
   : "[$codeUpper] Starting CrashMe driver..."
   typeset scOut
-  scOut=$(./vm/guest-ssh.sh -c 'sc.exe start CrashMe' 2>&1) || true
+  scOut=$(./src/scripts/guest-ssh.sh -c 'sc.exe start CrashMe' 2>&1) || true
   if echo "$scOut" | grep -qi "RUNNING\|START_PENDING"; then
     : "[$codeUpper] Driver running"
   else
@@ -83,7 +83,7 @@ for entry in "${codes[@]}"; do
   fi
 
   : "[$codeUpper] Triggering BugCheck $codeUpper $p1 $p2 $p3 $p4"
-  ./vm/guest-ssh.sh -c "C:\\Tools\\crashme-ctl.exe $code $p1 $p2 $p3 $p4" 2>&1 || true
+  ./src/scripts/guest-ssh.sh -c "C:\\Tools\\crashme-ctl.exe $code $p1 $p2 $p3 $p4" 2>&1 || true
 
   : "[$codeUpper] Waiting for reboot (~45s)..."
   sleep 45

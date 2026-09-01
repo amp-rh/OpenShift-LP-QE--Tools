@@ -37,11 +37,11 @@ Deterministic operations live in scripts with clear stdin/stdout contracts.
 
 ## Quick start
 
-Run the full verification sweep (requires the test VM; see [`vm/README.md`](vm/README.md)):
+Run the full verification sweep (requires the test VM; see [`src/scripts/crash-injector/README.md`](src/scripts/crash-injector/README.md)):
 
 ```bash
 export LIBVIRT_DEFAULT_URI=qemu:///system
-./vm/sweep-crashme.sh
+./src/scripts/crash-injector/sweep-crashme.sh
 ```
 
 Run the unit test suite (no VM needed):

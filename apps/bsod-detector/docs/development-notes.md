@@ -62,7 +62,7 @@ different point in the call stack.
 
 The `src/data/trigger-methods.json` file records codes **as observed** with
 Verifier enabled and marks each entry `"verified": true`. If Verifier is disabled,
-the observed codes will differ; re-run `vm/sweep-crashme.sh` to re-baseline.
+the observed codes will differ; re-run `src/scripts/crash-injector/sweep-crashme.sh` to re-baseline.
 
 ## Snapshot-based testing methodology
 
