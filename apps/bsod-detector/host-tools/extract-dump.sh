@@ -12,60 +12,69 @@
 # Output (stdout JSON):
 #   { "ok": true, "disk": "...", "outputDir": "/out",
 #     "dumpFiles": ["MEMORY.DMP","Minidump/..."], "warnings": [ ... ] }
-set -euo pipefail
+set -euxo pipefail; shopt -s inherit_errexit
+exec {BASH_XTRACEFD}>/dev/null
 
-DISK=""; OUT="/out"; WINROOT="/Windows"
-warn() { echo "extract-dump: $*" >&2; }
-emit() { # $1=ok(true/false) ; reads $FILES_JSON, $WARN_JSON
+typeset disk=''
+typeset out='/out'
+typeset winRoot='/Windows'
+function Warn () { echo "extract-dump: $*" >&2; true; }
+function Emit () {
   printf '{"ok":%s,"disk":%s,"outputDir":%s,"dumpFiles":%s,"warnings":%s}\n' \
-    "$1" "$(jq -Rn --arg v "$DISK" '$v')" "$(jq -Rn --arg v "$OUT" '$v')" \
-    "${FILES_JSON:-[]}" "${WARN_JSON:-[]}"
+    "$1" "$(jq -Rn --arg v "${disk}" '$v')" "$(jq -Rn --arg v "${out}" '$v')" \
+    "${filesJson:-[]}" "${warnJson:-[]}"
+  true
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --disk) DISK="$2"; shift 2 ;;
-    --out) OUT="$2"; shift 2 ;;
-    --windows-root) WINROOT="$2"; shift 2 ;;
+    --disk) disk="$2"; shift 2 ;;
+    --out) out="$2"; shift 2 ;;
+    --windows-root) winRoot="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,16p' "$0"; exit 0 ;;
-    *) warn "unknown arg: $1"; exit 2 ;;
+    *) Warn "unknown arg: $1"; exit 2 ;;
   esac
 done
 
-[[ -n "$DISK" ]] || { warn "--disk is required"; exit 2; }
-[[ -f "$DISK" ]] || { warn "disk not found: $DISK"; exit 2; }
-mkdir -p "$OUT"
+[[ -n "${disk}" ]] || { Warn "--disk is required"; exit 2; }
+[[ -f "${disk}" ]] || { Warn "disk not found: ${disk}"; exit 2; }
+mkdir -p "${out}"
 
-warns=(); found=()
+typeset -a warns=()
+typeset -a found=()
 
 # Locate the Windows partition automatically; -i inspects the OS layout.
 # virt-copy-out reads read-only by default.
-copy_out() { # $1 = path inside guest (relative to Windows root)
-  local src="$WINROOT/$1"
-  if virt-ls -a "$DISK" "$src" >/dev/null 2>&1; then
-    virt-copy-out -a "$DISK" "$src" "$OUT" 2>>/tmp/err && return 0
+function CopyOut () {
+  typeset src="${winRoot}/$1"
+  if virt-ls -a "${disk}" "${src}" >/dev/null 2>&1; then
+    virt-copy-out -a "${disk}" "${src}" "${out}" 2>>/tmp/err && return 0
   fi
   return 1
 }
 
 # MEMORY.DMP (kernel/complete dump)
-if copy_out "MEMORY.DMP"; then
+if CopyOut "MEMORY.DMP"; then
   found+=("MEMORY.DMP")
 else
   warns+=("MEMORY.DMP not found - dump type may be misconfigured or none written")
 fi
 
 # Minidump directory (small dumps, one per crash)
-if virt-ls -a "$DISK" "$WINROOT/Minidump" >/dev/null 2>&1; then
-  virt-copy-out -a "$DISK" "$WINROOT/Minidump" "$OUT" 2>>/tmp/err || true
-  while IFS= read -r f; do found+=("Minidump/$f"); done < <(virt-ls -a "$DISK" "$WINROOT/Minidump" 2>/dev/null | grep -i '\.dmp$' || true)
+typeset f=''
+if virt-ls -a "${disk}" "${winRoot}/Minidump" >/dev/null 2>&1; then
+  virt-copy-out -a "${disk}" "${winRoot}/Minidump" "${out}" 2>>/tmp/err || true
+  while IFS= read -r f; do found+=("Minidump/${f}"); done < <(virt-ls -a "${disk}" "${winRoot}/Minidump" 2>/dev/null | sed -n '/\.dmp$/Ip')
 else
   warns+=("no Minidump directory found")
 fi
 
-FILES_JSON="$(printf '%s\n' "${found[@]:-}" | jq -R . | jq -s 'map(select(length>0))')"
-WARN_JSON="$(printf '%s\n' "${warns[@]:-}" | jq -R . | jq -s 'map(select(length>0))')"
+typeset filesJson=''
+filesJson="$(printf '%s\n' "${found[@]:-}" | jq -R . | jq -s 'map(select(length>0))')"
+typeset warnJson=''
+warnJson="$(printf '%s\n' "${warns[@]:-}" | jq -R . | jq -s 'map(select(length>0))')"
 
-if [[ ${#found[@]} -eq 0 ]]; then emit false; exit 1; fi
-emit true
+if [[ "${#found[@]}" -eq 0 ]]; then Emit false; exit 1; fi
+Emit true
+true

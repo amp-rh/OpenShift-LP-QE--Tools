@@ -20,21 +20,21 @@ set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 typeset here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-typeset repo; repo="$(cd "$here/../../.." && pwd)"   # crash-injector -> scripts -> src -> app root
-VM_NAME="${VM_NAME:-bsod-test}"
-typeset gssh="$repo/src/scripts/guest-ssh.sh"
-SNAPSHOT="${SNAPSHOT:-crashme-installed}"
+typeset repo; repo="$(cd "${here}/../../.." && pwd)"   # crash-injector -> scripts -> src -> app root
+typeset vmName="${VM_NAME:-bsod-test}"
+typeset gssh="${repo}/src/scripts/guest-ssh.sh"
+typeset snapshot="${SNAPSHOT:-crashme-installed}"
 
 typeset code="0x19"
 typeset revert=1
-typeset out; out="$repo/output/dryrun-$(date +%Y%m%d-%H%M%S)"
+typeset out; out="${repo}/output/dryrun-$(date +%Y%m%d-%H%M%S)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --code)       code="$2"; shift 2 ;;
     --no-revert)  revert=0; shift ;;
     --out)        out="$2"; shift 2 ;;
-    --snapshot)   SNAPSHOT="$2"; shift 2 ;;
+    --snapshot)   snapshot="$2"; shift 2 ;;
     -h|--help)    sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "run-dry-run: unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -46,7 +46,7 @@ function Log () { echo "[dry-run] $*" >&2; true; }
 function LookupParams () {
   python3 -c "
 import json, sys
-tm = json.load(open('$repo/src/data/trigger-methods.json'))['codes']
+tm = json.load(open('${repo}/src/data/trigger-methods.json'))['codes']
 code = sys.argv[1].upper().replace('0X', '0x')
 if not code.startswith('0x'):
     code = '0x' + code
@@ -61,43 +61,44 @@ print(' '.join(tm[code]['parameters']))
 
 # Poll SSH until the guest responds (8s intervals, 25 attempts).
 function WaitForSsh () {
-  for _ in $(seq 1 25); do
-    "$gssh" -c '"up"' 2>/dev/null | grep -q up && return 0
+  typeset attempt=0
+  for (( attempt=1; attempt<=25; ++attempt )); do
+    "${gssh}" -c '"up"' 2>/dev/null | grep -q up && return 0
     sleep 8
   done
   return 1
 }
 
-typeset params; params=$(LookupParams "$code")
-typeset codeNorm; codeNorm=$(python3 -c "c='$code'.upper(); print('0x'+c[2:].zfill(8) if c.startswith('0x') or c.startswith('0X') else '0x'+c.zfill(8))")
-Log "code=$codeNorm params=$params"
+typeset params; params="$(LookupParams "${code}")"
+typeset codeNorm; codeNorm="$(python3 -c "c='${code}'.upper(); print('0x'+c[2:].zfill(8) if c.startswith('0x') or c.startswith('0X') else '0x'+c.zfill(8))")"
+Log "code=${codeNorm} params=${params}"
 
-if [[ "$revert" == 1 ]]; then
-  Log "reverting $VM_NAME to $SNAPSHOT"
-  virsh snapshot-revert "$VM_NAME" "$SNAPSHOT"
+if [[ "${revert}" == 1 ]]; then
+  Log "reverting ${vmName} to ${snapshot}"
+  virsh snapshot-revert "${vmName}" "${snapshot}"
 fi
 
-if [[ "$(virsh -q domstate "$VM_NAME")" != "running" ]]; then
-  Log "starting $VM_NAME"
-  virsh start "$VM_NAME" >/dev/null
+if [[ "$(virsh -q domstate "${vmName}")" != "running" ]]; then
+  Log "starting ${vmName}"
+  virsh start "${vmName}" >/dev/null
 fi
 
 Log "waiting for guest SSH"
 WaitForSsh || { echo "guest never came up" >&2; exit 1; }
 
 # --- Trigger the crash ---
-Log "triggering BSOD: $codeNorm $params"
-"$gssh" -c "C:\\Tools\\crashme-ctl.exe $code $params" 2>&1 || true
+Log "triggering BSOD: ${codeNorm} ${params}"
+"${gssh}" -c "C:\\Tools\\crashme-ctl.exe ${code} ${params}" 2>&1 || true
 
 # --- Delegate all evidence collection to the detector ---
 Log "collecting evidence via collect-all.sh"
-"$repo/src/scripts/collect-all.sh" \
-  --vm "$VM_NAME" \
-  --out "$out" \
-  --ssh "$gssh"
+"${repo}/src/scripts/collect-all.sh" \
+  --vm "${vmName}" \
+  --out "${out}" \
+  --ssh "${gssh}"
 
 # --- Print summary ---
-python3 - "$out/evidence-summary.json" "$codeNorm" <<'PY' 2>/dev/null || true
+python3 - "${out}/evidence-summary.json" "${codeNorm}" <<'PY' 2>/dev/null || true
 import json, sys
 d = json.load(open(sys.argv[1]))
 c = d.get("crash") or {}
@@ -115,3 +116,5 @@ if expected and code != expected:
 elif code:
     print("PASS")
 PY
+
+true

@@ -37,9 +37,9 @@ function Die ()  { Warn "$*"; exit 2; }
 function Have () { command -v "$1" >/dev/null 2>&1; }
 
 # Emit a JSON failure object to stdout and exit 1.
-function emit_failure () {
-  local error="$1"; shift
-  local warnsJson='[]'
+function EmitFailure () {
+  typeset error="$1"; shift
+  typeset warnsJson='[]'
   if [[ $# -gt 0 ]]; then
     warnsJson="$(printf '%s\n' "$@" | jq -R . | jq -s '.')"
   fi
@@ -70,53 +70,53 @@ typeset -a warnings=()
 typeset elfFile="${outDir}/guest-memory.elf"
 typeset dmpFile="${outDir}/host-crash.dmp"
 
-typeset domState
-domState="$(virsh domstate "${vm}" 2>/dev/null)" || emit_failure "could not query domain state for '${vm}'"
+typeset domState=''
+domState="$(virsh domstate "${vm}" 2>/dev/null)" || EmitFailure "could not query domain state for '${vm}'"
 
 case "${domState}" in
   crashed|paused)
     Warn "domain '${vm}' is in '${domState}' state; proceeding with memory dump"
     ;;
   *)
-    emit_failure "domain '${vm}' is in '${domState}' state (expected 'crashed' or 'paused')"
+    EmitFailure "domain '${vm}' is in '${domState}' state (expected 'crashed' or 'paused')"
     ;;
 esac
 
 Warn "capturing guest memory via virsh dump --memory-only (this may take a while for large VMs)"
 if ! virsh dump "${vm}" "${elfFile}" --memory-only --verbose 2>&1 | while IFS= read -r line; do Warn "virsh: ${line}"; done; then
-  emit_failure "virsh dump --memory-only failed" "ELF file may be incomplete at ${elfFile}"
+  EmitFailure "virsh dump --memory-only failed" "ELF file may be incomplete at ${elfFile}"
 fi
 
 if [[ ! -f "${elfFile}" ]]; then
-  emit_failure "virsh dump completed but ELF file not found at ${elfFile}"
+  EmitFailure "virsh dump completed but ELF file not found at ${elfFile}"
 fi
 
 chmod u+rw "${elfFile}" 2>/dev/null || warnings+=("could not fix permissions on ${elfFile}; elf2dmp may fail")
 
-typeset elfSize
+typeset elfSize=''
 elfSize="$(stat -c%s "${elfFile}" 2>/dev/null)" || elfSize="unknown"
 Warn "ELF dump captured: ${elfFile} (${elfSize} bytes)"
 
 Warn "converting ELF to WinDbg DMP via elf2dmp (requires network for PDB download)"
-typeset elf2dmpOutput
+typeset elf2dmpOutput=''
 if elf2dmpOutput="$(elf2dmp "${elfFile}" "${dmpFile}" 2>&1)"; then
   Warn "elf2dmp conversion succeeded"
 else
   Warn "elf2dmp output: ${elf2dmpOutput}"
-  emit_failure "elf2dmp conversion failed" "${elf2dmpOutput}"
+  EmitFailure "elf2dmp conversion failed" "${elf2dmpOutput}"
 fi
 
 if [[ ! -f "${dmpFile}" ]]; then
-  emit_failure "elf2dmp completed but DMP file not found at ${dmpFile}"
+  EmitFailure "elf2dmp completed but DMP file not found at ${dmpFile}"
 fi
 
 rm -f "${elfFile}"
 Warn "cleaned up intermediate ELF file"
 
-typeset dmpSize
+typeset dmpSize=''
 dmpSize="$(stat -c%s "${dmpFile}" 2>/dev/null)" || dmpSize=0
 
-typeset warnsJson
+typeset warnsJson=''
 warnsJson="$(printf '%s\n' "${warnings[@]:-}" | jq -R . | jq -s 'map(select(length>0))')"
 
 jq -n \

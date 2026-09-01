@@ -3,7 +3,7 @@ exec {BASH_XTRACEFD}>/dev/null
 set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI=qemu:///system
-typeset repoDir; repoDir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+typeset repoDir=''; repoDir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repoDir}"
 
 typeset triggerFile="${repoDir}/src/data/chaos-triggers.json"
@@ -53,7 +53,7 @@ function DetectCrash () {
     return 0
   fi
 
-  typeset state
+  typeset state=''
   state="$(virsh domstate "${vmName}" 2>/dev/null)" || state="unknown"
   [[ "${state}" == "crashed" || "${state}" == "shut off" ]]
 }
@@ -161,10 +161,10 @@ except Exception:
 # Ensure the domain has <panic model='isa'/> and on_crash=preserve.
 # Destroys a running domain if needed (caller must virsh start afterward).
 function EnsurePvpanicConfig () {
-  typeset domState
+  typeset domState=''
   domState="$(virsh domstate "${vmName}" 2>/dev/null)" || domState="unknown"
 
-  typeset xml
+  typeset xml=''
   if [[ "${domState}" == "running" || "${domState}" == "paused" ]]; then
     xml="$(virsh dumpxml "${vmName}" 2>/dev/null)" || return 0
   else
@@ -184,7 +184,7 @@ function EnsurePvpanicConfig () {
       virsh destroy "${vmName}" 2>&1 || true
       sleep 1
     fi
-    typeset tmpXml; tmpXml="$(mktemp /tmp/chaos-pvpanic-XXXXXX.xml)"
+    typeset tmpXml=''; tmpXml="$(mktemp /tmp/chaos-pvpanic-XXXXXX.xml)"
     python3 -c "
 import sys, re
 xml = sys.stdin.read()
@@ -223,7 +223,7 @@ function ApplyEnlightenmentToggles () {
 
   SaveOriginalDomainXml
 
-  typeset modifiedXml; modifiedXml="$(mktemp /tmp/chaos-modified-XXXXXX.xml)"
+  typeset modifiedXml=''; modifiedXml="$(mktemp /tmp/chaos-modified-XXXXXX.xml)"
   cp "${originalXml}" "${modifiedXml}"
 
   typeset -a toDisable=()
@@ -255,7 +255,7 @@ function ExecuteNmiInject () {
 # Reduce guest memory via virtio-balloon to targetMemoryKiB.
 function ExecuteBalloonSqueeze () {
   typeset triggerJson="${1}"
-  typeset -i targetKiB; targetKiB=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('targetMemoryKiB', 1048576))")
+  typeset -i targetKiB=0; targetKiB=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('targetMemoryKiB', 1048576))")
   virsh setmem "${vmName}" "${targetKiB}" 2>&1
   true
 }
@@ -263,7 +263,7 @@ function ExecuteBalloonSqueeze () {
 # Live-detach a disk device from the guest.
 function ExecuteDeviceHotremove () {
   typeset triggerJson="${1}"
-  typeset deviceTarget; deviceTarget=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('deviceTarget', 'vda'))")
+  typeset deviceTarget=''; deviceTarget=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('deviceTarget', 'vda'))")
   virsh detach-disk "${vmName}" "${deviceTarget}" --live 2>&1 || true
   true
 }
@@ -271,7 +271,9 @@ function ExecuteDeviceHotremove () {
 # Bring the guest NIC down for 10 seconds, then back up.
 function ExecuteNetworkToggle () {
   typeset iface=""
-  iface=$(virsh domiflist "${vmName}" 2>/dev/null | awk 'NR>2 && NF{print $1; exit}') || true
+  if ! iface=$(virsh domiflist "${vmName}" 2>/dev/null | awk 'NR>2 && NF{print $1; exit}'); then
+    iface=""
+  fi
   if [[ -z "${iface}" ]]; then
     : "no network interface found; skipping"
     return 1
@@ -285,7 +287,7 @@ function ExecuteNetworkToggle () {
 # Reduce live vCPU count to targetVcpus.
 function ExecuteVcpuHotremove () {
   typeset triggerJson="${1}"
-  typeset -i targetVcpus; targetVcpus=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('targetVcpus', 1))")
+  typeset -i targetVcpus=0; targetVcpus=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('targetVcpus', 1))")
   virsh setvcpus "${vmName}" "${targetVcpus}" --live 2>&1 || true
   true
 }
@@ -322,9 +324,9 @@ function ExecuteBlkdebugConfig () {
 # Throttle block I/O to near-zero IOPS/bandwidth via blkdeviotune.
 function ExecuteBlkdeviotune () {
   typeset triggerJson="${1}"
-  typeset deviceTarget; deviceTarget=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('deviceTarget', 'vda'))")
-  typeset -i iops; iops=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('throttleTotalIopsSec', 1))")
-  typeset -i bps; bps=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('throttleTotalBytesSec', 512))")
+  typeset deviceTarget=''; deviceTarget=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('deviceTarget', 'vda'))")
+  typeset -i iops=0; iops=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('throttleTotalIopsSec', 1))")
+  typeset -i bps=0; bps=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('throttleTotalBytesSec', 512))")
   virsh blkdeviotune "${vmName}" "${deviceTarget}" \
     --total-iops-sec "${iops}" --total-bytes-sec "${bps}" 2>&1
   true
@@ -333,7 +335,7 @@ function ExecuteBlkdeviotune () {
 # Inject a Machine Check Exception into vCPU 0 via QMP HMP passthrough.
 function ExecuteMceInject () {
   typeset triggerJson="${1}"
-  typeset mceCmd
+  typeset mceCmd=''
   mceCmd=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('mceCommandLine','mce 0 9 0xbd80000000000164 0xb200000000000000 0 0 0'))")
   virsh qemu-monitor-command "${vmName}" \
     "{\"execute\":\"human-monitor-command\",\"arguments\":{\"command-line\":\"${mceCmd}\"}}" 2>&1
@@ -343,7 +345,7 @@ function ExecuteMceInject () {
 # Pause the VM for pauseSeconds, then resume to test clock desync handling.
 function ExecutePauseResume () {
   typeset triggerJson="${1}"
-  typeset -i pauseSec
+  typeset -i pauseSec=0
   pauseSec=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('pauseSeconds', 20))")
   virsh qemu-monitor-command "${vmName}" '{"execute":"stop"}' 2>&1
   sleep "${pauseSec}"
@@ -354,9 +356,9 @@ function ExecutePauseResume () {
 # Suspend the guest via ACPI (requires QEMU guest agent) and wake after delay.
 function ExecuteAcpiSuspend () {
   typeset triggerJson="${1}"
-  typeset suspendType
+  typeset suspendType=''
   suspendType=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('suspendType', 'mem'))")
-  typeset -i delaySec
+  typeset -i delaySec=0
   delaySec=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('suspendDelaySec', 5))")
   virsh dompmsuspend "${vmName}" "${suspendType}" 2>&1 || true
   sleep "${delaySec}"
@@ -370,8 +372,8 @@ function ExecuteMsrWrite () {
   virsh qemu-monitor-command "${vmName}" '{"execute":"stop"}' 2>&1
   sleep 1
   while IFS= read -r line; do
-    typeset reg; reg=$(echo "${line}" | python3 -c "import json,sys; print(json.load(sys.stdin)['register'])")
-    typeset val; val=$(echo "${line}" | python3 -c "import json,sys; print(json.load(sys.stdin)['value'])")
+    typeset reg=''; reg=$(echo "${line}" | python3 -c "import json,sys; print(json.load(sys.stdin)['register'])")
+    typeset val=''; val=$(echo "${line}" | python3 -c "import json,sys; print(json.load(sys.stdin)['value'])")
     sudo python3 "${repoDir}/vm/kvm-msr-write.py" \
       --vm "${vmName}" --vcpu 0 --msr "${reg}" --value "${val}" 2>&1
   done < <(echo "${triggerJson}" | python3 -c "
@@ -386,7 +388,7 @@ for w in json.load(sys.stdin).get('msrWrites', []):
 # Enable ACPI suspend-to-mem in domain XML (required for dompmsuspend).
 function ApplyAcpiSuspendXml () {
   SaveOriginalDomainXml
-  typeset modifiedXml; modifiedXml="$(mktemp /tmp/chaos-modified-XXXXXX.xml)"
+  typeset modifiedXml=''; modifiedXml="$(mktemp /tmp/chaos-modified-XXXXXX.xml)"
 
   python3 -c "
 import re, sys
@@ -410,14 +412,14 @@ function RunTrigger () {
   typeset triggerId="${1}"
   typeset triggerJson="${2}"
 
-  typeset name; name=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin)['name'])")
-  typeset method; method=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin)['method'])")
-  typeset snapshot; snapshot=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin)['snapshot'])")
-  typeset collectionPath; collectionPath=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin)['collectionPath'])")
-  typeset -i timeoutSec; timeoutSec=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin)['timeoutSeconds'])")
-  typeset -i crashExpected; crashExpected=$(echo "${triggerJson}" | python3 -c "import json,sys; print(1 if json.load(sys.stdin)['crashExpected'] else 0)")
-  typeset guestWorkload; guestWorkload=$(echo "${triggerJson}" | python3 -c "import json,sys; w=json.load(sys.stdin).get('guestWorkload'); print(w if w else '')")
-  typeset -i requiresManual; requiresManual=$(echo "${triggerJson}" | python3 -c "import json,sys; print(1 if json.load(sys.stdin).get('requiresManualSetup', False) else 0)")
+  typeset name=''; name=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin)['name'])")
+  typeset method=''; method=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin)['method'])")
+  typeset snapshot=''; snapshot=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin)['snapshot'])")
+  typeset collectionPath=''; collectionPath=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin)['collectionPath'])")
+  typeset -i timeoutSec=0; timeoutSec=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin)['timeoutSeconds'])")
+  typeset -i crashExpected=0; crashExpected=$(echo "${triggerJson}" | python3 -c "import json,sys; print(1 if json.load(sys.stdin)['crashExpected'] else 0)")
+  typeset guestWorkload=''; guestWorkload=$(echo "${triggerJson}" | python3 -c "import json,sys; w=json.load(sys.stdin).get('guestWorkload'); print(w if w else '')")
+  typeset -i requiresManual=0; requiresManual=$(echo "${triggerJson}" | python3 -c "import json,sys; print(1 if json.load(sys.stdin).get('requiresManualSetup', False) else 0)")
 
   : "=== [${triggerId}] ${name} ==="
 
@@ -510,7 +512,7 @@ function RunTrigger () {
 
   # --- Post-crash cleanup (remove I/O throttle so VM can reboot) ---
   if [[ "${outcome}" == "crashed" && "${method}" == "blkdeviotune" ]]; then
-    typeset cleanupDev; cleanupDev=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('deviceTarget', 'vda'))")
+    typeset cleanupDev=''; cleanupDev=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('deviceTarget', 'vda'))")
     : "[${triggerId}] removing I/O throttle before reboot"
     virsh blkdeviotune "${vmName}" "${cleanupDev}" --total-iops-sec 0 --total-bytes-sec 0 2>&1 || true
   fi
@@ -518,7 +520,7 @@ function RunTrigger () {
   # --- Collect evidence ---
   typeset collectedVia="none"
   if [[ "${outcome}" == "crashed" ]]; then
-    typeset domState
+    typeset domState=''
     domState="$(virsh domstate "${vmName}" 2>/dev/null)" || domState="unknown"
 
     if [[ "${domState}" == "crashed" || "${domState}" == "paused" ]]; then
@@ -558,10 +560,10 @@ function RunTrigger () {
   fi
 
   # --- Extract observed code ---
-  typeset observedCode; observedCode=$(ExtractObservedCode "${triggerId}")
+  typeset observedCode=''; observedCode=$(ExtractObservedCode "${triggerId}")
 
   # --- Record result ---
-  typeset resultJson; resultJson=$(RecordResult "${triggerId}" "${outcome}" "${observedCode}" "${elapsed}" "${collectedVia}")
+  typeset resultJson=''; resultJson=$(RecordResult "${triggerId}" "${outcome}" "${observedCode}" "${elapsed}" "${collectedVia}")
   : "[${triggerId}] result: ${outcome} code=${observedCode} elapsed=${elapsed}s via=${collectedVia}"
   echo "${resultJson}"
 
@@ -575,9 +577,9 @@ function PrepSnapshots () {
   : "=== PREPARING CHAOS SNAPSHOTS ==="
 
   while IFS= read -r entry; do
-    typeset snapName; snapName=$(echo "${entry}" | python3 -c "import json,sys; print(json.load(sys.stdin)['snapshot'])")
-    typeset flags; flags=$(echo "${entry}" | python3 -c "import json,sys; print(json.load(sys.stdin)['verifierFlags'])")
-    typeset triggerName; triggerName=$(echo "${entry}" | python3 -c "import json,sys; print(json.load(sys.stdin)['name'])")
+    typeset snapName=''; snapName=$(echo "${entry}" | python3 -c "import json,sys; print(json.load(sys.stdin)['snapshot'])")
+    typeset flags=''; flags=$(echo "${entry}" | python3 -c "import json,sys; print(json.load(sys.stdin)['verifierFlags'])")
+    typeset triggerName=''; triggerName=$(echo "${entry}" | python3 -c "import json,sys; print(json.load(sys.stdin)['name'])")
 
     if virsh snapshot-info "${vmName}" "${snapName}" 2>/dev/null | grep -q "Name"; then
       : "[prep] snapshot ${snapName} already exists; skipping"
@@ -658,7 +660,7 @@ PY
   mkdir -p output
 
   for triggerId in "${triggerIds[@]}"; do
-    typeset triggerJson; triggerJson=$(python3 -c "
+    typeset triggerJson=''; triggerJson=$(python3 -c "
 import json, sys
 triggers = json.load(open(sys.argv[1]))['triggers']
 print(json.dumps(triggers[sys.argv[2]]))

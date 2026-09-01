@@ -15,19 +15,19 @@
 #
 # Requires: Bash 4.4+, xxd, jq, python3 (for struct unpacking on 64-bit params)
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
-  printf 'parse-dump-header: requires Bash >= 4.4 (found %s)\n' "$BASH_VERSION" >&2; exit 2
+  printf 'parse-dump-header: requires Bash >= 4.4 (found %s)\n' "${BASH_VERSION}" >&2; exit 2
 fi
 exec {BASH_XTRACEFD}>/dev/null
 set -euxo pipefail; shopt -s inherit_errexit
 
 typeset scriptDir; scriptDir="$(cd "$(dirname "$0")" && pwd)"
-typeset repoRoot; repoRoot="$(cd "$scriptDir/../.." && pwd)"
-typeset codesFile="$repoRoot/src/data/bugcheck-codes.json"
+typeset repoRoot; repoRoot="$(cd "${scriptDir}/../.." && pwd)"
+typeset codesFile="${repoRoot}/src/data/bugcheck-codes.json"
 
 function Die () { echo "parse-dump-header: $*" >&2; exit 2; }
 typeset -a warnList=()
 
-[[ -f "$codesFile" ]] || Die "bugcheck-codes.json not found at $codesFile"
+[[ -f "${codesFile}" ]] || Die "bugcheck-codes.json not found at ${codesFile}"
 
 typeset -a files=()
 while [[ $# -gt 0 ]]; do
@@ -35,7 +35,7 @@ while [[ $# -gt 0 ]]; do
     --dir)
       [[ $# -ge 2 ]] || Die "--dir requires a value"
       [[ -d "$2" ]] || Die "directory not found: $2"
-      while IFS= read -r f; do files+=("$f"); done < <(find "$2" -maxdepth 1 -iname '*.dmp' -type f | sort)
+      while IFS= read -r f; do files+=("${f}"); done < <(find "$2" -maxdepth 1 -iname '*.dmp' -type f | sort)
       shift 2 ;;
     -h|--help)
       sed -n '2,16p' "$0"; exit 0 ;;
@@ -81,34 +81,34 @@ with open('$1','rb') as f:
 
 typeset -a results=()
 for dump in "${files[@]}"; do
-  typeset baseName; baseName="$(basename "$dump")"
+  typeset baseName; baseName="$(basename "${dump}")"
 
-  typeset sig; sig=$(xxd -l 8 -p "$dump" 2>/dev/null || echo "")
-  if [[ "$sig" != "$pagedu64Sig" ]]; then
-    warnList+=("$baseName: not a PAGEDU64 dump (sig=$sig), skipped")
-    results+=("$(jq -n --arg f "$baseName" '{file:$f, bugCheckCode:null, bugCheckName:null, parameters:[], valid:false, error:"not a PAGEDU64 dump"}')")
+  typeset sig; sig=$(xxd -l 8 -p "${dump}" 2>/dev/null || echo "")
+  if [[ "${sig}" != "${pagedu64Sig}" ]]; then
+    warnList+=("${baseName}: not a PAGEDU64 dump (sig=${sig}), skipped")
+    results+=("$(jq -n --arg f "${baseName}" '{file:$f, bugCheckCode:null, bugCheckName:null, parameters:[], valid:false, error:"not a PAGEDU64 dump"}')")
     continue
   fi
 
-  typeset code; code=$(ReadU32LE "$dump" 0x38)
-  typeset p1; p1=$(ReadU64LE "$dump" 0x40)
-  typeset p2; p2=$(ReadU64LE "$dump" 0x48)
-  typeset p3; p3=$(ReadU64LE "$dump" 0x50)
-  typeset p4; p4=$(ReadU64LE "$dump" 0x58)
+  typeset code; code=$(ReadU32LE "${dump}" 0x38)
+  typeset p1; p1=$(ReadU64LE "${dump}" 0x40)
+  typeset p2; p2=$(ReadU64LE "${dump}" 0x48)
+  typeset p3; p3=$(ReadU64LE "${dump}" 0x50)
+  typeset p4; p4=$(ReadU64LE "${dump}" 0x58)
 
-  typeset name; name=$(jq -r --arg c "$code" '.codes[$c].name // empty' "$codesFile")
-  if [[ -z "$name" ]]; then
-    warnList+=("$baseName: code $code not in bugcheck-codes.json")
+  typeset name; name=$(jq -r --arg c "${code}" '.codes[$c].name // empty' "${codesFile}")
+  if [[ -z "${name}" ]]; then
+    warnList+=("${baseName}: code ${code} not in bugcheck-codes.json")
     name="null"
   else
-    name="\"$name\""
+    name="\"${name}\""
   fi
 
   results+=("$(jq -n \
-    --arg f "$baseName" \
-    --arg code "$code" \
-    --argjson name "$name" \
-    --arg p1 "$p1" --arg p2 "$p2" --arg p3 "$p3" --arg p4 "$p4" \
+    --arg f "${baseName}" \
+    --arg code "${code}" \
+    --argjson name "${name}" \
+    --arg p1 "${p1}" --arg p2 "${p2}" --arg p3 "${p3}" --arg p4 "${p4}" \
     '{file:$f, bugCheckCode:$code, bugCheckName:$name, parameters:[$p1,$p2,$p3,$p4], valid:true}')")
 done
 
@@ -116,10 +116,11 @@ typeset dumpsJson; dumpsJson=$(printf '%s\n' "${results[@]}" | jq -s .)
 typeset warnsJson; warnsJson=$(printf '%s\n' "${warnList[@]:-}" | jq -R . | jq -s 'map(select(length>0))')
 typeset ok=true
 for r in "${results[@]}"; do
-  if echo "$r" | jq -e '.valid == false or .bugCheckName == null' >/dev/null 2>&1; then
+  if echo "${r}" | jq -e '.valid == false or .bugCheckName == null' >/dev/null 2>&1; then
     ok=false; break
   fi
 done
 
-jq -n --argjson ok "$ok" --argjson dumps "$dumpsJson" --argjson warns "$warnsJson" \
+jq -n --argjson ok "${ok}" --argjson dumps "${dumpsJson}" --argjson warns "${warnsJson}" \
   '{ok:$ok, totalDumps:($dumps|length), dumps:$dumps, warnings:$warns}'
+true

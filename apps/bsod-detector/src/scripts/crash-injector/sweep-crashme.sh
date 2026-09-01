@@ -2,8 +2,8 @@
 set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI=qemu:///system
-typeset repoDir; repoDir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"  # crash-injector -> scripts -> src -> app root
-cd "$repoDir"
+typeset repoDir=''; repoDir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"  # crash-injector -> scripts -> src -> app root
+cd "${repoDir}"
 
 typeset -a codes=(
   "0x0000000A 0x0 0x0 0x0 0x0"
@@ -30,10 +30,11 @@ typeset -a codes=(
 # Poll SSH until the guest responds or max attempts is exhausted (8s intervals).
 function WaitSsh () {
   typeset max="${1:-30}"
-  for _i in $(seq 1 "$max"); do
+  typeset _i=''
+  while IFS= read -r _i; do
     ./src/scripts/guest-ssh.sh -c '"up"' 2>/dev/null | grep -q up && return 0
     sleep 8
-  done
+  done < <(seq 1 "${max}")
   return 1
 }
 
@@ -41,13 +42,13 @@ function WaitSsh () {
 function CollectResult () {
   typeset codeHex="$1"
   typeset sweepDir="output/sweep-${codeHex}"
-  mkdir -p "$sweepDir"
+  mkdir -p "${sweepDir}"
 
-  typeset json
+  typeset json=''
   json=$(./src/scripts/guest-ssh.sh -c "& C:\\bsod-detector\\scripts\\collect-guest.ps1 -OutputDir C:\\bsod-detector\\output\\sweep-${codeHex}" 2>&1) || true
-  if [[ -n "$json" ]]; then
-    echo "$json" > "${sweepDir}/collect-guest.json"
-    echo "$json"
+  if [[ -n "${json}" ]]; then
+    echo "${json}" > "${sweepDir}/collect-guest.json"
+    echo "${json}"
   else
     echo '{"ok":false,"warnings":["collect-guest.ps1 produced no output"]}' > "${sweepDir}/collect-guest.json"
     echo "EMPTY"
@@ -57,60 +58,65 @@ function CollectResult () {
 
 : "=== CRASHME SWEEP: ${#codes[@]} codes ==="
 
-typeset code p1 p2 p3 p4
+typeset entry='' code='' p1='' p2='' p3='' p4=''
 for entry in "${codes[@]}"; do
-  read -r code p1 p2 p3 p4 <<< "$entry"
-  typeset codeUpper
-  codeUpper=$(echo "$code" | tr '[:lower:]' '[:upper:]' | sed 's/^0X/0x/')
+  read -r code p1 p2 p3 p4 <<< "${entry}"
+  typeset codeUpper=''
+  codeUpper=$(echo "${code}" | tr '[:lower:]' '[:upper:]' | sed 's/^0X/0x/')
 
-  : "--- [$codeUpper] REVERT ---"
+  : "--- [${codeUpper}] REVERT ---"
   virsh snapshot-revert bsod-test crashme-installed 2>&1
   virsh start bsod-test 2>&1 || true
 
-  : "[$codeUpper] Waiting for SSH..."
+  : "[${codeUpper}] Waiting for SSH..."
   if ! WaitSsh 30; then
-    : "[$codeUpper] FAIL: SSH never came up after revert"
+    : "[${codeUpper}] FAIL: SSH never came up after revert"
     mkdir -p "output/sweep-${codeUpper}"
     echo '{"ok":false,"warnings":["SSH never came up after snapshot revert"]}' > "output/sweep-${codeUpper}/collect-guest.json"
     continue
   fi
 
-  : "[$codeUpper] Starting CrashMe driver..."
-  typeset scOut
+  : "[${codeUpper}] Starting CrashMe driver..."
+  typeset scOut=''
   scOut=$(./src/scripts/guest-ssh.sh -c 'sc.exe start CrashMe' 2>&1) || true
-  if echo "$scOut" | grep -qi "RUNNING\|START_PENDING"; then
-    : "[$codeUpper] Driver running"
+  if echo "${scOut}" | grep -qi "RUNNING\|START_PENDING"; then
+    : "[${codeUpper}] Driver running"
   else
-    : "[$codeUpper] WARNING: sc start output: $scOut"
+    : "[${codeUpper}] WARNING: sc start output: ${scOut}"
   fi
 
-  : "[$codeUpper] Triggering BugCheck $codeUpper $p1 $p2 $p3 $p4"
-  ./src/scripts/guest-ssh.sh -c "C:\\Tools\\crashme-ctl.exe $code $p1 $p2 $p3 $p4" 2>&1 || true
+  : "[${codeUpper}] Triggering BugCheck ${codeUpper} ${p1} ${p2} ${p3} ${p4}"
+  ./src/scripts/guest-ssh.sh -c "C:\\Tools\\crashme-ctl.exe ${code} ${p1} ${p2} ${p3} ${p4}" 2>&1 || true
 
-  : "[$codeUpper] Waiting for reboot (~45s)..."
+  : "[${codeUpper}] Waiting for reboot (~45s)..."
   sleep 45
 
-  : "[$codeUpper] Waiting for SSH after crash..."
+  : "[${codeUpper}] Waiting for SSH after crash..."
   if ! WaitSsh 40; then
-    : "[$codeUpper] SSH not up after 320s, trying virsh reset..."
+    : "[${codeUpper}] SSH not up after 320s, trying virsh reset..."
     virsh reset bsod-test 2>&1 || true
     sleep 30
     if ! WaitSsh 20; then
-      : "[$codeUpper] FAIL: VM unresponsive after reset"
+      : "[${codeUpper}] FAIL: VM unresponsive after reset"
       mkdir -p "output/sweep-${codeUpper}"
       echo '{"ok":false,"warnings":["VM unresponsive after BSOD + reset"]}' > "output/sweep-${codeUpper}/collect-guest.json"
       continue
     fi
   fi
 
-  : "[$codeUpper] Collecting evidence..."
-  typeset result
-  result=$(CollectResult "$codeUpper")
-  typeset observed
-  observed=$(echo "$result" | grep -oP '"bugCheckCode"\s*:\s*"[^"]*"' | head -1 | grep -oP '0x[0-9a-fA-F]+')
-  typeset dump
-  dump=$(echo "$result" | grep -oP '"dumpFiles"\s*:\s*\[[^\]]*\]' | head -1)
-  : "[$codeUpper] Observed: ${observed:-NONE} Dumps: ${dump:-NONE}"
+  : "[${codeUpper}] Collecting evidence..."
+  typeset result=''
+  result=$(CollectResult "${codeUpper}")
+  typeset observed=''
+  typeset _bugCheckMatch=''
+  _bugCheckMatch=$(grep -oP '"bugCheckCode"\s*:\s*"[^"]*"' <<< "${result}") || true
+  _bugCheckMatch=$(head -1 <<< "${_bugCheckMatch}")
+  observed=$(grep -oP '0x[0-9a-fA-F]+' <<< "${_bugCheckMatch}") || true
+  typeset dump=''
+  dump=$(grep -oP '"dumpFiles"\s*:\s*\[[^\]]*\]' <<< "${result}") || true
+  dump=$(head -1 <<< "${dump}")
+  : "[${codeUpper}] Observed: ${observed:-NONE} Dumps: ${dump:-NONE}"
 done
 
 : "=== SWEEP COMPLETE ==="
+true

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euxo pipefail; shopt -s inherit_errexit
 
-typeset testDir
+typeset testDir=''
 testDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 : "=== BSOD Detector Test Suite ==="
@@ -16,5 +16,5 @@ if ! command -v jq &>/dev/null; then
   exit 1
 fi
 
-bats "$testDir/"
+bats "${testDir}/"
 true

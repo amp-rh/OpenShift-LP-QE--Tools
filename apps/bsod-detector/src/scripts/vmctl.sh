@@ -18,10 +18,10 @@
 set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
-VM_NAME="${VM_NAME:-bsod-test}"
-SNAP_NAME="${SNAP_NAME:-clean-baseline}"
+typeset vmName="${VM_NAME:-bsod-test}"
+typeset snapName="${SNAP_NAME:-clean-baseline}"
 typeset here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-typeset xml="$here/bsod-test.domain.xml"
+typeset xml="${here}/bsod-test.domain.xml"
 
 function Die () { echo "vmctl: $*" >&2; exit 1; }
 function Have () { command -v "$1" >/dev/null 2>&1; }
@@ -30,30 +30,31 @@ Have virsh || Die "virsh not found; install libvirt-client"
 
 typeset cmd="${1:-status}"; shift || true
 
-case "$cmd" in
+case "${cmd}" in
   define)
-    [[ -f "$xml" ]] || Die "missing $xml"
-    virsh define "$xml"
-    : "defined $VM_NAME from $xml"
+    [[ -f "${xml}" ]] || Die "missing ${xml}"
+    virsh define "${xml}"
+    : "defined ${vmName} from ${xml}"
     ;;
   snapshot)
     # Internal qcow2 snapshot including RAM if running, disk-only if off.
-    virsh snapshot-create-as "$VM_NAME" "$SNAP_NAME" \
+    virsh snapshot-create-as "${vmName}" "${snapName}" \
       "clean baseline for BSOD testing" --atomic
-    virsh snapshot-list "$VM_NAME"
+    virsh snapshot-list "${vmName}"
     ;;
   revert)
-    virsh snapshot-revert "$VM_NAME" "$SNAP_NAME" --running
-    : "reverted $VM_NAME to $SNAP_NAME"
+    virsh snapshot-revert "${vmName}" "${snapName}" --running
+    : "reverted ${vmName} to ${snapName}"
     ;;
-  start)   virsh start "$VM_NAME" ;;
-  stop)    virsh shutdown "$VM_NAME" ;;      # graceful ACPI
-  kill)    virsh destroy "$VM_NAME" ;;       # hard power-off (simulates freeze recovery)
-  console) virsh console "$VM_NAME" ;;
-  status)  virsh dominfo "$VM_NAME" ;;
+  start)   virsh start "${vmName}" ;;
+  stop)    virsh shutdown "${vmName}" ;;      # graceful ACPI
+  kill)    virsh destroy "${vmName}" ;;       # hard power-off (simulates freeze recovery)
+  console) virsh console "${vmName}" ;;
+  status)  virsh dominfo "${vmName}" ;;
   list)    virsh list --all ;;
-  ip)      virsh domifaddr "$VM_NAME" --source agent 2>/dev/null \
-             || virsh domifaddr "$VM_NAME" 2>/dev/null \
+  ip)      virsh domifaddr "${vmName}" --source agent 2>/dev/null \
+             || virsh domifaddr "${vmName}" 2>/dev/null \
              || Die "no IP (guest agent not responding?)" ;;
-  *) Die "unknown command: $cmd (see header for usage)" ;;
+  *) Die "unknown command: ${cmd} (see header for usage)" ;;
 esac
+true

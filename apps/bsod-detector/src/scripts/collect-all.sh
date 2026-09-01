@@ -24,7 +24,7 @@ exec {BASH_XTRACEFD}>/dev/null
 set -euxo pipefail; shopt -s inherit_errexit
 
 typeset scriptDir; scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-typeset repoRoot; repoRoot="$(cd "$scriptDir/../.." && pwd)"
+typeset repoRoot; repoRoot="$(cd "${scriptDir}/../.." && pwd)"
 
 export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 
@@ -46,22 +46,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$vm" ]]     || { echo "collect-all: --vm required" >&2; exit 2; }
-[[ -n "$outDir" ]] || { echo "collect-all: --out required" >&2; exit 2; }
-[[ -n "$sshCmd" ]] || { echo "collect-all: --ssh required" >&2; exit 2; }
+[[ -n "${vm}" ]]     || { echo "collect-all: --vm required" >&2; exit 2; }
+[[ -n "${outDir}" ]] || { echo "collect-all: --out required" >&2; exit 2; }
+[[ -n "${sshCmd}" ]] || { echo "collect-all: --ssh required" >&2; exit 2; }
 
-mkdir -p "$outDir"
+mkdir -p "${outDir}"
 
 function Log () { echo "[collect-all] $*" >&2; true; }
 
 # --- Phase 1: Capture BSOD screenshot (background) ---
 Log "starting framebuffer capture"
-"$scriptDir/capture-vm-screen.sh" --vm "$vm" --out "$outDir" --frames 30 --interval 0.3 &
+"${scriptDir}/capture-vm-screen.sh" --vm "${vm}" --out "${outDir}" --frames 30 --interval 0.3 &
 typeset capturePid=$!
 
 # --- Phase 2: Host-side crash dump (if domain is preserved after crash) ---
-typeset isHostDumpCollected=false
-typeset domState
+typeset domState=''
 domState="$(virsh domstate "${vm}" 2>/dev/null)" || domState="unknown"
 Log "domain state: ${domState}"
 
@@ -72,7 +71,6 @@ if [[ "${domState}" == "crashed" || "${domState}" == "paused" ]]; then
   Log "domain is preserved; attempting host-side memory dump via elf2dmp"
   if "${scriptDir}/capture-host-dump.sh" --vm "${vm}" --out "${outDir}" > "${outDir}/capture-host-dump.json"; then
     if [[ -f "${outDir}/host-crash.dmp" ]]; then
-      isHostDumpCollected=true
       Log "host-side dump captured: host-crash.dmp"
     fi
   else
@@ -90,12 +88,12 @@ Log "waiting for guest reboot (timeout=${timeout}s)"
 typeset rebooted=0
 typeset elapsed=0
 typeset pollInterval=8
-while [[ $elapsed -lt $timeout ]]; do
-  if "$sshCmd" -c '"up"' 2>/dev/null | grep -q up; then
+while [[ "${elapsed}" -lt "${timeout}" ]]; do
+  if "${sshCmd}" -c '"up"' 2>/dev/null | grep -q up; then
     rebooted=1
     break
   fi
-  sleep "$pollInterval"
+  sleep "${pollInterval}"
   elapsed=$((elapsed + pollInterval))
 done
 
@@ -115,7 +113,7 @@ if [[ -n "${bestFrame}" ]]; then
 else
   Log "WARNING: no screenshot frames captured"
 fi
-rm -f "$outDir"/bsod-frame-*.png
+rm -f "${outDir}"/bsod-frame-*.png
 
 # --- Phase 5: Collect guest-side evidence (if VM rebooted) ---
 typeset guestCollected=false
@@ -138,9 +136,9 @@ if [[ "${rebooted}" == 1 ]]; then
     fi
     if [[ -n "${ip}" ]]; then
       typeset -a scpOpts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
-      typeset keyFile="$repoRoot/.ssh/bsod-test"
-      [[ -f "$keyFile" ]] && scpOpts+=(-i "$keyFile" -o IdentitiesOnly=yes)
-      scp -r "${scpOpts[@]}" "Administrator@$ip:${guestOut}/*" "$outDir/" 2>/dev/null || true
+      typeset keyFile="${repoRoot}/.ssh/bsod-test"
+      [[ -f "${keyFile}" ]] && scpOpts+=(-i "${keyFile}" -o IdentitiesOnly=yes)
+      scp -r "${scpOpts[@]}" "Administrator@${ip}:${guestOut}/*" "${outDir}/" 2>/dev/null || true
     fi
     Log "guest evidence collected"
   else
@@ -152,21 +150,19 @@ fi
 
 # --- Phase 6: Collect host-side signals ---
 Log "collecting host-side signals"
-"$scriptDir/collect-host-signals.sh" --vm "$vm" > "$outDir/host-signals.json" 2>/dev/null || true
+"${scriptDir}/collect-host-signals.sh" --vm "${vm}" > "${outDir}/host-signals.json" 2>/dev/null || true
 
 # --- Phase 7: Assemble evidence summary manifest ---
 Log "writing evidence summary"
-typeset hasScreenshot=false; [[ -f "$outDir/bsod-screenshot.png" ]] && hasScreenshot=true
-typeset hasHostSignals=false; [[ -s "$outDir/host-signals.json" ]] && hasHostSignals=true
+typeset hasScreenshot=false; [[ -f "${outDir}/bsod-screenshot.png" ]] && hasScreenshot=true
+typeset hasHostSignals=false; [[ -s "${outDir}/host-signals.json" ]] && hasHostSignals=true
 typeset -a dumpFiles=()
-if [[ -d "$outDir/Minidump" ]]; then
+if [[ -d "${outDir}/Minidump" ]]; then
   while IFS= read -r f; do
     dumpFiles+=("Minidump/$(basename "${f}")")
   done < <(find "${outDir}/Minidump" -name '*.dmp' 2>/dev/null)
 fi
-typeset hasMemoryDmp=false
 if [[ -f "${outDir}/MEMORY.DMP" ]]; then
-  hasMemoryDmp=true
   dumpFiles+=("MEMORY.DMP")
 fi
 
@@ -217,4 +213,5 @@ with open(os.path.join(out_dir, "evidence-summary.json"), "w") as f:
 print(json.dumps(summary, indent=2))
 PY
 
-Log "done. Evidence package: $outDir"
+Log "done. Evidence package: ${outDir}"
+true

@@ -36,13 +36,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$vm" ]]     || { echo "capture-vm-screen: --vm required" >&2; exit 2; }
-[[ -n "$outDir" ]] || { echo "capture-vm-screen: --out required" >&2; exit 2; }
+[[ -n "${vm}" ]]     || { echo "capture-vm-screen: --vm required" >&2; exit 2; }
+[[ -n "${outDir}" ]] || { echo "capture-vm-screen: --out required" >&2; exit 2; }
 
-mkdir -p "$outDir"
+mkdir -p "${outDir}"
 
-typeset i
-for i in $(seq 1 "$frames"); do
-  virsh screenshot "$vm" --file "$outDir/bsod-frame-$i.png" >/dev/null 2>&1 || true
-  sleep "$interval"
-done
+typeset i=''
+while IFS= read -r i; do
+  virsh screenshot "${vm}" --file "${outDir}/bsod-frame-${i}.png" >/dev/null 2>&1 || true
+  sleep "${interval}"
+done < <(seq 1 "${frames}")
+
+true

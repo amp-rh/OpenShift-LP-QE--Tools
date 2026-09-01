@@ -20,25 +20,27 @@
 #   # or:  podman build -t bsod-host-tools \
 #   #        -f image/container/bsod-detector/Dockerfile apps/bsod-detector
 # Override the image name with BSOD_HOST_IMAGE if you tagged it differently.
-set -euo pipefail
+set -euxo pipefail; shopt -s inherit_errexit
 
-IMAGE="${BSOD_HOST_IMAGE:-bsod-host-tools}"
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT="$(cd "$HERE/.." && pwd)"
+typeset image="${BSOD_HOST_IMAGE:-bsod-host-tools}"
+typeset here=''
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+typeset project=''
+project="$(cd "${here}/.." && pwd)"
 
-DISK=""; OUT="$PROJECT/output/dumps"
+typeset disk=''; typeset out="${project}/output/dumps"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --disk) DISK="$2"; shift 2 ;;
-    --out)  OUT="$2"; shift 2 ;;
+    --disk) disk="$2"; shift 2 ;;
+    --out)  out="$2"; shift 2 ;;
     -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "run.sh: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
-[[ -n "$DISK" ]] || { echo "run.sh: --disk is required" >&2; exit 2; }
-[[ -r "$DISK" ]] || { echo "run.sh: cannot read disk: $DISK (need libvirt group or root)" >&2; exit 2; }
-mkdir -p "$OUT"
+[[ -n "${disk}" ]] || { echo "run.sh: --disk is required" >&2; exit 2; }
+[[ -r "${disk}" ]] || { echo "run.sh: cannot read disk: ${disk} (need libvirt group or root)" >&2; exit 2; }
+mkdir -p "${out}"
 
 # The disk image lives under /var/lib/libvirt/images (root-owned). Rootless
 # podman may not be able to read it; if so, run this wrapper via sudo or add an
@@ -49,15 +51,15 @@ mkdir -p "$OUT"
 # you don't own fails with EPERM and would also break libvirt's own access.
 # Instead bind it ':ro' and disable label separation for this container so it
 # can read the existing label. The output dir we own, so ':Z' is correct there.
-SELINUX_OPT=()
+typeset -a selinuxOpt=()
 if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce)" != "Disabled" ]]; then
-  SELINUX_OPT=(--security-opt label=disable)
+  selinuxOpt=(--security-opt label=disable)
 fi
 
 exec podman run --rm \
   --userns=keep-id \
-  "${SELINUX_OPT[@]}" \
-  -v "$DISK":/images/"$(basename "$DISK")":ro \
-  -v "$OUT":/out:Z \
-  "$IMAGE" \
-  --disk /images/"$(basename "$DISK")" --out /out
+  "${selinuxOpt[@]}" \
+  -v "${disk}":/images/"$(basename "${disk}")":ro \
+  -v "${out}":/out:Z \
+  "${image}" \
+  --disk /images/"$(basename "${disk}")" --out /out
