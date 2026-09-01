@@ -1,8 +1,8 @@
 # Scripts
 
-Catalog of executable tooling. Each script does one job, takes well-defined inputs, and writes **exactly one JSON object** to stdout (the consumer contract). Diagnostic chatter goes to the information/error streams, never stdout.
+Catalog of executable tooling. The directory contains both PowerShell 5.1+ (Windows guest-side) and Bash 4+ (Linux host-side) scripts. Each collector and analysis script does one job, takes well-defined inputs, and writes **exactly one JSON object** to stdout (the consumer contract). Helper scripts like `capture-vm-screen.sh` that produce file artifacts instead of JSON are excluded from this contract. Diagnostic chatter goes to the information/error streams, never stdout.
 
-All scripts are PowerShell 5.1+ (Windows) and read their lookup tables from [`../data/`](../data/README.md) — no table is duplicated inside a script. Tool selection rationale is in [`../../docs/tool-selection.md`](../../docs/tool-selection.md).
+All scripts read their lookup tables from [`../data/`](../data/README.md); no table is duplicated inside a script. Tool selection rationale is in [`../../docs/tool-selection.md`](../../docs/tool-selection.md).
 
 ## Layout
 

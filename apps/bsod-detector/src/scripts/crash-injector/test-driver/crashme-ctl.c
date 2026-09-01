@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #define CRASHME_IOCTL CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
@@ -17,6 +18,34 @@ static void usage(const char *prog)
     fprintf(stderr, "Usage: %s <hex-bugcheck-code> [p1] [p2] [p3] [p4]\n", prog);
     fprintf(stderr, "All values in hex (0x prefix optional).\n");
     exit(1);
+}
+
+static ULONG parse_ulong_hex(const char *s, const char *name)
+{
+    char *end;
+    errno = 0;
+    unsigned long val = strtoul(s, &end, 16);
+    if (*end != '\0' || end == s || errno == ERANGE) {
+        fprintf(stderr, "Invalid hex value for %s: '%s'\n", name, s);
+        exit(1);
+    }
+    if (val > 0xFFFFFFFF) {
+        fprintf(stderr, "%s value 0x%lX exceeds ULONG range\n", name, val);
+        exit(1);
+    }
+    return (ULONG)val;
+}
+
+static ULONG_PTR parse_ulongptr_hex(const char *s, const char *name)
+{
+    char *end;
+    errno = 0;
+    unsigned long long val = strtoull(s, &end, 16);
+    if (*end != '\0' || end == s || errno == ERANGE) {
+        fprintf(stderr, "Invalid hex value for %s: '%s'\n", name, s);
+        exit(1);
+    }
+    return (ULONG_PTR)val;
 }
 
 int main(int argc, char *argv[])

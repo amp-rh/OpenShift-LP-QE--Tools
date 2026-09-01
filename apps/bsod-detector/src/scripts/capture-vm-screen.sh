@@ -27,10 +27,10 @@ typeset interval="0.3"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --vm)       vm="$2"; shift 2 ;;
-    --out)      outDir="$2"; shift 2 ;;
-    --frames)   frames="$2"; shift 2 ;;
-    --interval) interval="$2"; shift 2 ;;
+    --vm)       [[ $# -ge 2 ]] || { echo "capture-vm-screen: --vm requires a value" >&2; exit 2; }; vm="$2"; shift 2 ;;
+    --out)      [[ $# -ge 2 ]] || { echo "capture-vm-screen: --out requires a value" >&2; exit 2; }; outDir="$2"; shift 2 ;;
+    --frames)   [[ $# -ge 2 ]] || { echo "capture-vm-screen: --frames requires a value" >&2; exit 2; }; frames="$2"; shift 2 ;;
+    --interval) [[ $# -ge 2 ]] || { echo "capture-vm-screen: --interval requires a value" >&2; exit 2; }; interval="$2"; shift 2 ;;
     -h|--help)  sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "capture-vm-screen: unknown arg: $1" >&2; exit 2 ;;
   esac

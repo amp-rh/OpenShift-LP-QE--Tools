@@ -8,7 +8,12 @@ $result = @{
     deviceAccessible = $false
 }
 
-$testsigningAlready = (bcdedit /enum '{current}' | Select-String 'testsigning\s+Yes') -ne $null
+$enumOutput = bcdedit /enum '{current}'
+if ($LASTEXITCODE -ne 0) {
+    $result | ConvertTo-Json -Compress
+    exit 1
+}
+$testsigningAlready = $null -ne ($enumOutput | Select-String 'testsigning\s+Yes')
 if (-not $testsigningAlready) {
     bcdedit /set testsigning on | Out-Null
     $result.testsigning = $true

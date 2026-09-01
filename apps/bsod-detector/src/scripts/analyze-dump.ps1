@@ -104,10 +104,15 @@ $rawLog = Join-Path $OutputDir 'analyze.txt'
 #    -y <sym>   symbol path
 #    -c "..."   commands to run, then quit
 $cdbCommand = '!analyze -v; q'
+$cdbExitCode = $null
 try {
     & $cdb -z $DumpPath -y $SymbolPath -c $cdbCommand *> $rawLog
+    $cdbExitCode = $LASTEXITCODE
 } catch {
-    $warnings.Add("cdb invocation raised: $($_.Exception.Message)")
+    Fail "cdb invocation failed: $($_.Exception.Message)" 4
+}
+if ($cdbExitCode -ne 0 -and $null -ne $cdbExitCode) {
+    Fail "cdb exited with code $cdbExitCode (see $rawLog)." 4
 }
 if (-not (Test-Path $rawLog) -or ((Get-Item $rawLog).Length -eq 0)) {
     Fail "cdb produced no output (see $rawLog). Check the dump and symbol path." 4

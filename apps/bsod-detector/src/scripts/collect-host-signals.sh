@@ -62,11 +62,11 @@ Have jq || Die "jq not found"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --vm) VM_NAME="$2"; shift 2 ;;
-    --since) SINCE="$2"; shift 2 ;;
+    --vm) [[ $# -ge 2 ]] || Die "--vm requires a value"; VM_NAME="$2"; shift 2 ;;
+    --since) [[ $# -ge 2 ]] || Die "--since requires a value"; SINCE="$2"; shift 2 ;;
     --dmesg) USE_DMESG=1; shift ;;
-    --log-file) LOG_FILE="$2"; shift 2 ;;
-    --domain-xml) DOMAIN_XML_FILE="$2"; shift 2 ;;
+    --log-file) [[ $# -ge 2 ]] || Die "--log-file requires a value"; LOG_FILE="$2"; shift 2 ;;
+    --domain-xml) [[ $# -ge 2 ]] || Die "--domain-xml requires a value"; DOMAIN_XML_FILE="$2"; shift 2 ;;
     -h|--help) sed -n '2,38p' "$0"; exit 0 ;;
     *) Die "unknown arg: $1" ;;
   esac

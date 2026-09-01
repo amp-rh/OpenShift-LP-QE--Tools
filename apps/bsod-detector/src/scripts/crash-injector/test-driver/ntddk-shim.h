@@ -1,6 +1,20 @@
 #ifndef _NTDDK_SHIM_H
 #define _NTDDK_SHIM_H
 
+/*
+ * Minimal WDK type stubs for MinGW cross-compilation on non-Windows hosts.
+ *
+ * Required because MinGW does not ship ntddk.h or full WDK headers. This
+ * shim provides just enough type definitions for IDE autocompletion and
+ * syntax checking of crashme.c. It is NOT used in production driver builds:
+ * the Makefile no longer defines _NTDDK_SHIM, so crashme.c always includes
+ * <ntddk.h> from the real WDK.
+ *
+ * WARNING: These layouts are NOT ABI-accurate. Structure sizes, alignment,
+ * and field offsets have not been verified against the official WDK headers.
+ * Never link a driver binary built with this shim; always cross-check
+ * against the WDK definitions for any layout-sensitive code.
+ */
 #include <stdint.h>
 #include <stddef.h>
 

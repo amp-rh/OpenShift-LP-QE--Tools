@@ -25,7 +25,7 @@ Keep it simple. Prefer a small, well-defined tool over a broad framework.
 Deterministic operations live in scripts with clear stdin/stdout contracts.
 
 - **Scripts produce facts; humans make decisions.** Data collection, parsing dump files, reading event logs, and formatting output belong in scripts. Interpreting a crash or deciding how to act on it is a human call.
-- All executable tooling goes under `src/scripts/`. Each script does one thing and prints structured output (prefer JSON to stdout) so downstream steps can consume it.
+- `src/scripts/` contains guest collection and configuration scripts. Host-side collectors (such as `collect-host-signals.sh`) also live here when they consume `src/data/` lookups and follow the same output contract. Each collector script does one thing and emits exactly one JSON object to stdout so downstream steps can consume it with `jq` or `json.loads()`. Helper scripts like `capture-vm-screen.sh` that produce file artifacts instead of JSON are excluded from this contract.
 - Every script is documented in [`src/scripts/README.md`](src/scripts/README.md): what it does, its inputs, and its output shape.
 - **No hardcoded duplicated data.** Bug-check code tables, driver mappings, and log source names come from a single source-of-truth file that scripts read; never copy the same lookup into multiple scripts.
 
@@ -60,7 +60,7 @@ contracts, the safety model, and agentic usage.
 apps/bsod-detector/
 ├── README.md              # This file
 ├── src/
-│   ├── scripts/           # Guest-side PowerShell tooling (one job each)
+│   ├── scripts/           # Collection and configuration scripts (PowerShell + Bash)
 │   │   └── README.md      # Script catalog: purpose, inputs, output shape
 │   ├── data/              # Source-of-truth lookups (bug-check codes, log sources)
 │   └── test-driver/       # KeBugCheckEx kernel driver (cross-compiled with mingw64)

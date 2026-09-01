@@ -35,11 +35,11 @@ typeset timeout=300
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --vm)             vm="$2"; shift 2 ;;
-    --out)            outDir="$2"; shift 2 ;;
-    --ssh)            sshCmd="$2"; shift 2 ;;
-    --guest-scripts)  guestScripts="$2"; shift 2 ;;
-    --timeout)        timeout="$2"; shift 2 ;;
+    --vm)             [[ $# -ge 2 ]] || { echo "collect-all: --vm requires a value" >&2; exit 2; }; vm="$2"; shift 2 ;;
+    --out)            [[ $# -ge 2 ]] || { echo "collect-all: --out requires a value" >&2; exit 2; }; outDir="$2"; shift 2 ;;
+    --ssh)            [[ $# -ge 2 ]] || { echo "collect-all: --ssh requires a value" >&2; exit 2; }; sshCmd="$2"; shift 2 ;;
+    --guest-scripts)  [[ $# -ge 2 ]] || { echo "collect-all: --guest-scripts requires a value" >&2; exit 2; }; guestScripts="$2"; shift 2 ;;
+    --timeout)        [[ $# -ge 2 ]] || { echo "collect-all: --timeout requires a value" >&2; exit 2; }; timeout="$2"; shift 2 ;;
     -h|--help)        sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "collect-all: unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -76,9 +76,12 @@ kill $capturePid 2>/dev/null || true
 wait $capturePid 2>/dev/null || true
 
 # --- Phase 3: Select best screenshot frame ---
-typeset bestFrame; bestFrame="$(ls -S "$outDir"/bsod-frame-*.png 2>/dev/null | head -1)"
-if [[ -n "$bestFrame" ]]; then
-  mv "$bestFrame" "$outDir/bsod-screenshot.png"
+typeset bestFrame=""
+if compgen -G "${outDir}/bsod-frame-*.png" &>/dev/null; then
+  bestFrame="$(ls -S "${outDir}"/bsod-frame-*.png 2>/dev/null | head -n1)" || true
+fi
+if [[ -n "${bestFrame}" ]]; then
+  mv "${bestFrame}" "${outDir}/bsod-screenshot.png"
   Log "screenshot captured: bsod-screenshot.png"
 else
   Log "WARNING: no screenshot frames captured"
@@ -90,13 +93,21 @@ typeset guestCollected=false
 if [[ "$rebooted" == 1 ]]; then
   Log "guest is up; collecting guest-side evidence"
   typeset guestOut='C:/bsod-detector/output/collect-current'
-  "$sshCmd" -c "Remove-Item -Recurse -Force $guestOut -EA SilentlyContinue; & $guestScripts/collect-guest.ps1 -OutputDir ${guestOut//\//\\}" \
-    2>/dev/null | grep -avE '^#< CLIXML|<Objs ' > "$outDir/collect-guest.json" || true
+  typeset guestCommandOk=false
+  if "${sshCmd}" -c "Remove-Item -Recurse -Force ${guestOut} -EA SilentlyContinue; & ${guestScripts}/collect-guest.ps1 -OutputDir ${guestOut//\//\\}" \
+    2>/dev/null | sed -E '/^#< CLIXML|<Objs /d' > "${outDir}/collect-guest.json"; then
+    guestCommandOk=true
+  else
+    Log "WARNING: guest collection pipeline returned non-zero"
+  fi
 
-  if [[ -s "$outDir/collect-guest.json" ]]; then
+  if [[ "${guestCommandOk}" == true && -s "${outDir}/collect-guest.json" ]] && python3 -c "import json,sys;json.load(open(sys.argv[1]))" "${outDir}/collect-guest.json" 2>/dev/null; then
     guestCollected=true
-    typeset ip; ip="$(virsh -q domifaddr "$vm" | awk 'NR==1{print $4}' | cut -d/ -f1)"
-    if [[ -n "$ip" ]]; then
+    typeset ip=""
+    if ip="$(virsh -q domifaddr "${vm}" 2>/dev/null | awk 'NR==1{print $4}' | cut -d/ -f1)"; then
+      true
+    fi
+    if [[ -n "${ip}" ]]; then
       typeset -a scpOpts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
       typeset keyFile="$repoRoot/.ssh/bsod-test"
       [[ -f "$keyFile" ]] && scpOpts+=(-i "$keyFile" -o IdentitiesOnly=yes)

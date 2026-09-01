@@ -1,6 +1,10 @@
 CC = x86_64-w64-mingw32-gcc
 
-# Driver build requires WDK headers; set WDK_INCLUDE to their location
+# Driver build requires WDK headers; set WDK_INCLUDE to their location.
+# ntddk-shim.h provides minimal type stubs for IDE autocompletion when
+# cross-compiling with MinGW on a non-Windows host. It is NOT used for
+# production builds. Structure layouts in the shim are approximate and
+# must be verified against real WDK headers before any ABI-sensitive use.
 WDK_INCLUDE ?= /usr/share/mingw-w64/include/ddk
 
 CFLAGS_USER = -Wall -Wextra -O2

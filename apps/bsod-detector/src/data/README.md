@@ -53,4 +53,13 @@ bc=set(json.load(open('src/data/bugcheck-codes.json'))['codes'])
 bad=[k for k in tm if k not in bc]
 print("MISSING:",bad) if bad else print("all trigger-methods codes resolve")
 EOF
+
+# every host-signals relatedBugCheck should exist in bugcheck-codes.json
+python3 - <<'EOF'
+import json
+hs=json.load(open('src/data/host-signals.json'))['kernelLogSignals']
+bc=set(json.load(open('src/data/bugcheck-codes.json'))['codes'])
+bad=[s['id']+':'+s['relatedBugCheck'] for s in hs if s.get('relatedBugCheck') and s['relatedBugCheck'] not in bc]
+print("MISSING:",bad) if bad else print("all host-signals relatedBugCheck values resolve")
+EOF
 ```

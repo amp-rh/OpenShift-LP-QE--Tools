@@ -268,7 +268,7 @@ These are set by `src/scripts/crash-injector/prep-guest.ps1` and baked into the 
 | `AlwaysKeepMemoryDump` | 1 | Don't delete the dump on low disk |
 | `AutoReboot` | 1 | Reboot after crash so SSH comes back |
 | `LogEvent` | 1 | Log the BugCheck event (System/1001) |
-| Page file | System-managed, >= RAM | Required for kernel/complete dumps |
+| Page file | System-managed; complete dumps require >= RAM + 257 MB | Kernel dumps need a page file on the system volume; complete dumps need one at least as large as physical RAM |
 | OpenSSH | Enabled, key auth | Remote access for automation |
 | CrashMe driver | `C:\Tools\crashme.sys` + `crashme-ctl.exe` | KeBugCheckEx trigger |
 
@@ -277,6 +277,8 @@ These are set by `src/scripts/crash-injector/prep-guest.ps1` and baked into the 
 - **podman** with the `bsod-host-tools` image built (run from the repo root):
   `podman build -t bsod-host-tools -f image/container/bsod-detector/Dockerfile apps/bsod-detector`
 - The guest disk must be **readable** by the invoking user and the VM **shut off**.
+
+**Guest script deployment:** Copy `src/scripts/collect-guest.ps1` (and its `lib/` directory) to `C:\bsod-detector\scripts` on the guest, and `src/data/` to `C:\bsod-detector\data`, before the test run. The CI example above assumes this layout.
 
 ---
 
@@ -289,7 +291,7 @@ directory as a pipeline artifact. Key files:
 |---|---|
 | `collect-guest.json` | Full structured report (the primary artifact) |
 | `Minidump/*.dmp` | Small memory dumps (one per crash, ~256 KB each) |
-| `MEMORY.DMP` | Full kernel dump (size ~ RAM; only if `CrashDumpEnabled=1` or 2) |
+| `MEMORY.DMP` | Kernel dump (`CrashDumpEnabled=2`, kernel pages only) or complete dump (`CrashDumpEnabled=1`, all physical RAM + 257 MB page file required) |
 
 The JSON report is self-contained for triage. The `.dmp` files are for deep
 analysis with WinDbg / `kd -z <file> -c "!analyze -v"`.
@@ -309,7 +311,7 @@ All use the KeBugCheckEx test driver (`src/scripts/crash-injector/test-driver/cr
 
 | Code | Name |
 |---|---|
-| `0x0000000A` | IRQL_NOT_LESS_OR_EQUAL (observed as 0xD1; Driver Verifier transforms in driver context) |
+| `0x0000000A` | IRQL_NOT_LESS_OR_EQUAL (observed as 0xD1 / DRIVER_IRQL_NOT_LESS_OR_EQUAL with Driver Verifier enabled) |
 | `0x00000019` | BAD_POOL_HEADER |
 | `0x0000001A` | MEMORY_MANAGEMENT |
 | `0x0000001E` | KMODE_EXCEPTION_NOT_HANDLED |

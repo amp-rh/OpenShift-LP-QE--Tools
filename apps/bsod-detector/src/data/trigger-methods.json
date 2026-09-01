@@ -7,7 +7,7 @@
       "method": "kebugcheckex",
       "parameters": ["0x0", "0x0", "0x0", "0x0"],
       "observedAs": "0x000000D1",
-      "note": "Driver Verifier transforms 0x0A to 0xD1 when crash originates from driver context"
+      "note": "With Driver Verifier enabled, triggering 0x0A produces 0xD1 (DRIVER_IRQL_NOT_LESS_OR_EQUAL) as the observed bug check"
     },
     "0x00000019": {
       "name": "BAD_POOL_HEADER",

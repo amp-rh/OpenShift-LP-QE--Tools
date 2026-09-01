@@ -13,7 +13,10 @@
 #   { "ok": true, "dumps": [ { "file": "...", "bugCheckCode": "0x...",
 #     "bugCheckName": "...", "parameters": [...], "valid": true } ], "warnings": [] }
 #
-# Requires: xxd, jq, python3 (for struct unpacking on 64-bit params)
+# Requires: Bash 4.4+, xxd, jq, python3 (for struct unpacking on 64-bit params)
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+  printf 'parse-dump-header: requires Bash >= 4.4 (found %s)\n' "$BASH_VERSION" >&2; exit 2
+fi
 exec {BASH_XTRACEFD}>/dev/null
 set -euxo pipefail; shopt -s inherit_errexit
 
@@ -30,6 +33,7 @@ typeset -a files=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dir)
+      [[ $# -ge 2 ]] || Die "--dir requires a value"
       [[ -d "$2" ]] || Die "directory not found: $2"
       while IFS= read -r f; do files+=("$f"); done < <(find "$2" -maxdepth 1 -iname '*.dmp' -type f | sort)
       shift 2 ;;
