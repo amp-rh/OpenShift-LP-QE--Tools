@@ -1,0 +1,98 @@
+# BSOD Detector
+
+A Windows tool that detects Blue Screen of Death (BSOD) events and dumps all relevant diagnostic information for post-mortem analysis.
+
+## Goal
+
+When Windows hits a BSOD, capture and persist everything useful for root-cause analysis:
+
+- The bug check (stop) code and its parameters
+- Faulting driver / module, if identifiable
+- Crash dump files (`MEMORY.DMP`, minidumps in `C:\Windows\Minidump\`)
+- Relevant System and Application event log entries around the crash
+- Basic system context (OS build, uptime, recent driver/update changes)
+
+Detection is **implicit**: the collector catches any bug-check code that occurs,
+not just a pre-defined set. The `src/data/host/trigger-methods.json` file defines the
+19 codes we deliberately exercise in CI using the KeBugCheckEx test driver.
+The `src/data/host/chaos-triggers.json` file defines 12 organic fault injection
+triggers (NMI, memory balloon, device hot-remove, Driver Verifier stress, block
+I/O throttle, Hyper-V enlightenment permutation) that produce real BSODs through
+actual failure conditions.
+
+Keep it simple. Prefer a small, well-defined tool over a broad framework.
+
+## Conventions
+
+### Scripts as tooling
+
+Deterministic operations live in scripts with clear stdin/stdout contracts.
+
+- **Scripts produce facts; humans make decisions.** Data collection, parsing dump files, reading event logs, and formatting output belong in scripts. Interpreting a crash or deciding how to act on it is a human call.
+- `src/scripts/` contains guest collection and configuration scripts. Host-side collectors (such as `collect-host-signals.sh`) also live here when they consume `src/data/` lookups and follow the same output contract. Each collector script does one thing and emits exactly one JSON object to stdout so downstream steps can consume it with `jq` or `json.loads()`. Helper scripts like `capture-vm-screen.sh` that produce file artifacts instead of JSON are excluded from this contract.
+- Every script is documented in [`src/scripts/README.md`](src/scripts/README.md): what it does, its inputs, and its output shape.
+- **No hardcoded duplicated data.** Bug-check code tables, driver mappings, and log source names come from a single source-of-truth file that scripts read; never copy the same lookup into multiple scripts.
+
+### Style
+
+- Windows-first. Scripts are PowerShell (`.ps1`) unless there is a reason to use another language; note the requirement at the top of each script.
+- Keep functions small and testable. Fail loudly with clear error messages.
+- Never require interactive input in a script that may run unattended after a crash.
+
+## Quick start
+
+Run the full verification sweep (requires the test VM; see [`src/scripts/host/crash-injector/README.md`](src/scripts/host/crash-injector/README.md)):
+
+```bash
+export LIBVIRT_DEFAULT_URI=qemu:///system
+./src/scripts/host/crash-injector/sweep-crashme.sh
+```
+
+Run the unit test suite (no VM needed):
+
+```bash
+cd test && bash run-tests.sh
+```
+
+Or use the scripts individually in your own pipeline; see
+[**docs/integration.md**](docs/integration.md) for CI/CD patterns, JSON
+contracts, the safety model, and agentic usage.
+
+**New here, or not sure which script to run?** Start with
+[**docs/file-guide.md**](docs/file-guide.md) — what every file does, the
+guest/host and Catcher/Pitcher split, and step-by-step run guides for both a
+naturally-occurring BSOD and a deliberately triggered one.
+
+## Layout
+
+```
+apps/bsod-detector/
+├── README.md              # This file
+├── src/
+│   ├── scripts/           # Executable tooling, split by WHERE it runs
+│   │   ├── guest/         #   inside the Windows VM (PowerShell)
+│   │   ├── host/          #   on the Linux host / hypervisor (Bash, Python)
+│   │   │   └── crash-injector/  # destructive: intentionally crash a test VM
+│   │   ├── lib/           #   shared by both (Common.ps1)
+│   │   └── README.md      # Script catalog: purpose, inputs, output shape
+│   └── data/              # Source-of-truth lookups, split the same way
+│       ├── guest/         #   staged into the VM
+│       ├── host/          #   never staged into the VM
+│       └── bugcheck-codes.json   # shared by both sides
+├── test/                  # bats unit test suite (run-tests.sh)
+├── host-tools/            # Containerized libguestfs offline dump extraction
+├── docs/                  # Design notes and usage
+│   ├── architecture.md            # Big-picture overview (shared hub)
+│   ├── file-guide.md              # What every file does + step-by-step run guides
+│   ├── development-notes.md       # Design rationale + tool-selection + what-to-gather
+│   ├── integration.md             # CI/CD and agentic integration guide
+│   └── natural-bsod-workflow.md   # Runbook: detect a naturally-occurring BSOD
+└── .gitignore             # Ignores build artifacts, output, and secrets
+```
+
+Container image definition is at `image/container/bsod-detector/`.
+
+## Notes
+
+- BSOD dumps and event logs may contain host-identifying data. Do not commit captured dumps or logs to the repo; keep them under the ignored `output/` directory.
+- When adding a new capture step, wire it into the main detector entry point and document it in `src/scripts/README.md` in the same change.

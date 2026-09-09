@@ -1,0 +1,20 @@
+# Build artifacts
+*.sys
+*.exe
+*.o
+*.a
+src/test-driver/libntoskrnl.a
+
+# Runtime output
+output/
+
+# Secrets
+.env
+.ssh/
+
+# Override root .gitignore *.xml exclusion for the libvirt domain definition
+!src/scripts/host/bsod-test.domain.xml
+
+# Python bytecode
+__pycache__/
+*.pyc
