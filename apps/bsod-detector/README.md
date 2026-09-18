@@ -41,27 +41,143 @@ Deterministic operations live in scripts with clear stdin/stdout contracts.
 
 ## Quick start
 
-Run the full verification sweep (requires the test VM; see [`src/scripts/host/crash-injector/README.md`](src/scripts/host/crash-injector/README.md)):
+### For Teammates: Getting the Latest Changes
 
+**Step 1: Clone or update the repository**
 ```bash
-export LIBVIRT_DEFAULT_URI=qemu:///system
-./src/scripts/host/crash-injector/sweep-crashme.sh
+git clone https://github.com/amp-rh/OpenShift-LP-QE--Tools.git
+cd OpenShift-LP-QE--Tools/apps/bsod-detector
 ```
 
-Run the unit test suite (no VM needed):
+**Step 2: Checkout the feature branch**
+```bash
+git fetch origin
+git checkout feat/bsod-kvm-freeze-detector
+```
+
+**Step 3: Verify the setup**
+```bash
+# Check you have the guest/host split structure
+ls -la src/scripts/guest/ src/scripts/host/
+ls -la src/data/guest/ src/data/host/
+
+# Verify key files are present
+ls -la src/scripts/host/stakeout.sh
+ls -la docs/file-guide.md
+```
+
+**Step 4: Read the orientation guide** (start here if new)
+```bash
+cat docs/file-guide.md
+```
+
+---
+
+### To Test the Detector Against a Live VM
+
+**Prerequisites:**
+- `oc` and `jq` installed
+- KUBECONFIG pointing to your OpenShift cluster
+- A Windows VM with qemu-guest-agent running
+
+**Example: Capture an intentional crash on your VM**
+
+```bash
+# Set the VM and namespace
+export VM=your-vm-name
+export NS=your-namespace
+
+# Step 1: Preflight check
+./src/scripts/host/stakeout.sh preflight \
+  --provider kubevirt \
+  --ns $NS \
+  --vm $VM \
+  --scenario any \
+  --out ./evidence
+
+# Step 2: Stage the toolkit (one-time)
+mkdir -p bsod-src && zip -r bsod-src.zip \
+  src/scripts/guest/ src/scripts/lib/Common.ps1 \
+  src/data/bugcheck-codes.json src/data/guest/
+GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py put \
+  bsod-src.zip 'C:\Windows\Temp\bsod-src.zip'
+GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
+  src/scripts/guest/stage-toolkit.ps1
+
+# Step 3: Configure crash dumps
+GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py exec \
+  powershell -NoProfile -ExecutionPolicy Bypass \
+  -Command 'C:\bsod-detector\src\scripts\guest\configure-dumps.ps1'
+
+# Step 4: Watch for crashes (in a separate terminal)
+./src/scripts/host/stakeout.sh watch \
+  --provider kubevirt \
+  --ns $NS \
+  --vm $VM \
+  --out ./evidence \
+  --duration 600
+
+# Step 5: Trigger a test crash (in another terminal)
+GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
+  src/scripts/host/crash-injector/setup-notmyfault.ps1
+GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py exec \
+  powershell -NoProfile -ExecutionPolicy Bypass \
+  -Command 'C:\Temp\nmf\notmyfaultc64.exe /accepteula /crash 0x01'
+
+# Step 6: Check the captured evidence
+ls -lah ./evidence/
+cat ./evidence/evidence-summary.json | jq .
+cat ./evidence/stakeout-summary.json | jq .verdict
+```
+
+See **[docs/file-guide.md](docs/file-guide.md)** for step-by-step instructions, or **[docs/natural-bsod-workflow.md](docs/natural-bsod-workflow.md)** for the natural BSOD runbook.
+
+---
+
+### Run the Unit Tests (No VM Needed)
 
 ```bash
 cd test && bash run-tests.sh
 ```
 
-Or use the scripts individually in your own pipeline; see
-[**docs/integration.md**](docs/integration.md) for CI/CD patterns, JSON
-contracts, the safety model, and agentic usage.
+Runs 68+ bats tests covering:
+- Preflight gating logic
+- Verdict classification
+- Script syntax
+- JSON validation
 
-**New here, or not sure which script to run?** Start with
-[**docs/file-guide.md**](docs/file-guide.md) — what every file does, the
-guest/host and Catcher/Pitcher split, and step-by-step run guides for both a
-naturally-occurring BSOD and a deliberately triggered one.
+---
+
+### Use in Your Own Pipeline
+
+See [**docs/integration.md**](docs/integration.md) for:
+- CI/CD integration patterns
+- JSON contracts (input/output shapes)
+- Exit codes and error handling
+- Agentic (programmatic) usage
+
+---
+
+### Key Changes in This Branch
+
+**Phase 1 Architecture Review (Complete):**
+- ✅ Guest/host script separation (`src/scripts/{guest,host}/`)
+- ✅ Guest/host data staging split (`src/data/{guest,host}/`)
+- ✅ New `stakeout.sh` — natural-BSOD campaign runner with hard-freeze escalation
+- ✅ New `docs/file-guide.md` — orientation guide for what each file does
+- ✅ Fixed stale path references from an earlier rename
+- ✅ 20 new bats tests for `stakeout.sh`; 68/73 passing overall
+
+**What This Solves:**
+- Confusing file layout (no way to tell guest scripts from host scripts)
+- Hard-freeze abandonment (watch-crash.sh gave up on frozen guests)
+- Missing documentation (what does each file do, and when?)
+
+**Still Deferred (Phase 2+):**
+- Minimize guest artifacts (item #2)
+- Full KVM/KubeVirt backend abstraction (item #3)
+- pvpanic race condition (item #6)
+- Offline collection pipeline (item #7)
 
 ## Layout
 
