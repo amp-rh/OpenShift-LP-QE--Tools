@@ -115,9 +115,9 @@ def extract_events_from_evtx(evtx_path, target_events):
                         "provider": provider,
                         "message": message,
                     })
-                except Exception:
-                    continue  # skip malformed records
-    except Exception:
+                except Exception:  # noqa: BLE001, S112  # skip malformed .evtx records
+                    continue
+    except Exception:  # noqa: BLE001  # tolerate corrupt/truncated .evtx files
         return matched
 
     return matched

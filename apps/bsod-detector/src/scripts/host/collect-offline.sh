@@ -97,10 +97,14 @@ elif [[ ! -r "${disk}" ]]; then
 else
   Log "extracting dumps + evtx from ${disk} via guestfs"
   if command -v virt-copy-out >/dev/null 2>&1; then
+    # shellcheck disable=SC2034  # extractOk/extractJson reserved for future use
     extractJson="$("${hostTools}/extract-dump.sh" --disk "${disk}" --out "${outDir}" --windows-root "${winRoot}" 2>/dev/null)" || true
+    # shellcheck disable=SC2034
     extractOk=true
   elif command -v podman >/dev/null 2>&1; then
+    # shellcheck disable=SC2034
     extractJson="$("${hostTools}/run.sh" --disk "${disk}" --out "${outDir}" 2>/dev/null)" || true
+    # shellcheck disable=SC2034
     extractOk=true
   else
     warnings+=("no libguestfs (virt-copy-out) and no podman; cannot extract offline")

@@ -18,6 +18,7 @@
 FROM registry.fedoraproject.org/fedora-minimal:41
 
 # libguestfs needs an appliance; the package pulls a prebuilt one on Fedora.
+# hadolint ignore=DL3013,DL3041
 RUN microdnf install -y \
         libguestfs-tools-c \
         qemu-img \
