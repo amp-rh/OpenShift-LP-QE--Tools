@@ -38,7 +38,7 @@ def find_qemu_pid(vm_name: str) -> int:
     result = subprocess.run(
         ["virsh", "qemu-monitor-command", vm_name,
          '{"execute":"query-status"}'],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(f"VM '{vm_name}' not found or not running: {result.stderr.strip()}")
@@ -47,7 +47,8 @@ def find_qemu_pid(vm_name: str) -> int:
         if not entry.isdigit():
             continue
         try:
-            cmdline = open(f"/proc/{entry}/cmdline", "rb").read().decode("utf-8", errors="replace")
+            with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                cmdline = fh.read().decode("utf-8", errors="replace")
         except (PermissionError, FileNotFoundError):
             continue
         if "qemu-system" in cmdline and f"guest={vm_name}" in cmdline:

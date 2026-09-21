@@ -42,7 +42,7 @@ exec {BASH_XTRACEFD}>/dev/null
 export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 
 typeset here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-typeset hostTools; hostTools="$(cd "${here}/../.." && pwd)/host-tools"
+typeset hostTools; hostTools="$(cd "${here}/../../.." && pwd)/host-tools"
 
 typeset vmName="${VM_NAME:-}"
 typeset mode="recover"
@@ -136,7 +136,7 @@ if [[ "${mode}" == "detect" ]]; then
 fi
 
 # 5. Recovery. Resolve output dir + guest disk.
-[[ -n "${out}" ]] || out="$(cd "${here}/../.." && pwd)/output/host-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo run)"
+[[ -n "${out}" ]] || out="$(cd "${here}/../../.." && pwd)/output/host-$(date +%Y%m%d-%H%M%S 2>/dev/null || echo run)"
 mkdir -p "${out}"
 
 if [[ -z "${disk}" ]]; then

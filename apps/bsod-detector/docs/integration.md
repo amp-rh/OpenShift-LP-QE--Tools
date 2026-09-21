@@ -123,7 +123,7 @@ driver.
 ```bash
 # From the host, sweep all 19 defined codes:
 export LIBVIRT_DEFAULT_URI=qemu:///system
-./src/scripts/host/crash-injector/sweep-crashme.sh
+./src/scripts/crash-injector/sweep-crashme.sh
 
 # Or drive a single code manually:
 # 1. Revert to known-good state
@@ -234,25 +234,18 @@ For CI use, the trigger is gated by:
 ## Decision tree: which collection path?
 
 ```
-Guest rebooted after crash?
-  ├─ YES (SSH reachable)
-  │   └─ collect-guest.ps1    <- preferred; gets events + dumps + system context
-  │
-  └─ NO (frozen / boot loop / won't start)
-      └─ Is the disk image accessible from the host?
-          ├─ YES
-          │   └─ host-tools/extract-dump.sh  <- offline dump extraction
-          │       (only gets dump files; no event logs or system context)
-          │
-          └─ NO (remote host, cloud, no disk access)
-              └─ Manual intervention required
-                  (attach debugger, pull VHDX, or use cloud provider's
-                   serial console / crash dump facility)
+Crash detected (guest agent dead / domain crashed)?
+  └─ collect-offline.sh --vm <name> --out <dir>
+       1. Capture raw memory backup (guest-memory.elf)
+       2. Stop the VM (virsh destroy / virtctl stop --force)
+       3. Extract dumps + .evtx offline (guestfs)
+       4. Parse dump headers + event logs
+       5. Collect host-side signals
+       6. Assemble evidence-summary.json
 ```
 
-Always prefer the guest-side path when available — it captures the full picture
-(events, system context, timeline). The host-side path is a fallback that only
-recovers the raw dump files.
+The offline path is always preferred. It extracts crash dumps, event logs,
+and system context without needing guest-side scripts, SSH, or a reboot.
 
 ---
 
@@ -260,13 +253,13 @@ recovers the raw dump files.
 
 ### Guest prerequisites (one-time setup)
 
-These are set by `src/scripts/host/crash-injector/prep-guest.ps1` and baked into the `clean-baseline` snapshot:
+These are set by `src/scripts/crash-injector/prep-guest.ps1` and baked into the `clean-baseline` snapshot:
 
 | Setting | Value | Why |
 |---|---|---|
 | `CrashDumpEnabled` | 2 (kernel) | Write a kernel dump on BSOD |
 | `AlwaysKeepMemoryDump` | 1 | Don't delete the dump on low disk |
-| `AutoReboot` | 1 | Reboot after crash so SSH comes back |
+| `AutoReboot` | 0 | Stay at crash screen so MEMORY.DMP is fully written; host extracts offline |
 | `LogEvent` | 1 | Log the BugCheck event (System/1001) |
 | Page file | System-managed; complete dumps require >= RAM + 257 MB | Kernel dumps need a page file on the system volume; complete dumps need one at least as large as physical RAM |
 | OpenSSH | Enabled, key auth | Remote access for automation |
@@ -278,7 +271,10 @@ These are set by `src/scripts/host/crash-injector/prep-guest.ps1` and baked into
   `podman build -t bsod-host-tools -f image/container/bsod-detector/Dockerfile apps/bsod-detector`
 - The guest disk must be **readable** by the invoking user and the VM **shut off**.
 
-**Guest script deployment:** Copy `src/scripts/guest/collect-guest.ps1` (and its `lib/` directory) to `C:\bsod-detector\scripts` on the guest, and `src/data/` to `C:\bsod-detector\data`, before the test run. The CI example above assumes this layout.
+**Guest script deployment:** In the offline-first flow, no guest-side scripts
+need to be staged. Evidence (dumps, event logs) is extracted from the guest
+disk after the VM is stopped. Only the CrashMe driver needs to be pre-installed
+for deliberate crash testing (see `crash-injector/prep-guest.ps1`).
 
 ---
 
@@ -304,10 +300,10 @@ secrets, credentials, or PII.
 ## Validated crash types
 
 All 19 bug-check codes in
-[`data/host/trigger-methods.json`](../src/data/host/trigger-methods.json) have been verified
+[`data/trigger-methods.json`](../src/data/trigger-methods.json) have been verified
 end-to-end on Windows Server 2025 (build 26100) with Driver Verifier enabled.
-All use the KeBugCheckEx test driver (`src/scripts/host/crash-injector/test-driver/crashme.sys`) invoked via
-`src/scripts/host/crash-injector/sweep-crashme.sh`.
+All use the KeBugCheckEx test driver (`src/scripts/crash-injector/test-driver/crashme.sys`) invoked via
+`src/scripts/crash-injector/sweep-crashme.sh`.
 
 | Code | Name |
 |---|---|

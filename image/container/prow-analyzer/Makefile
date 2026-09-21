@@ -1,7 +1,7 @@
 .PHONY: build push clean help
 
 IMAGE_REGISTRY ?= quay.io
-IMAGE_NAMESPACE ?= oramraz
+IMAGE_NAMESPACE ?= chaclark
 IMAGE_NAME ?= prow-analyzer-bot
 IMAGE_TAG ?= latest
 IMAGE_FULL = $(IMAGE_REGISTRY)/$(IMAGE_NAMESPACE)/$(IMAGE_NAME):$(IMAGE_TAG)
@@ -12,7 +12,7 @@ APP_DIR = apps/prow-analyzer
 # Build container image
 build:
 	@echo "Building container image: $(IMAGE_FULL)"
-	podman build -t $(IMAGE_FULL) -f Dockerfile ../../../$(APP_DIR)
+	podman build $(BUILDFLAGS) -t $(IMAGE_FULL) -f Dockerfile ../../../$(APP_DIR)
 
 # Push container image to registry
 push: build
