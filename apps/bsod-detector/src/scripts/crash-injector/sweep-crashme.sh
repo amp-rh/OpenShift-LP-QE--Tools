@@ -2,7 +2,7 @@
 set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI=qemu:///system
-typeset repoDir=''; repoDir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"  # crash-injector -> scripts -> src -> app root
+typeset repoDir=''; repoDir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"  # crash-injector -> scripts -> src -> app root
 cd "${repoDir}"
 
 typeset -a codes=(
@@ -45,7 +45,7 @@ function CollectResult () {
   mkdir -p "${sweepDir}"
 
   typeset json=''
-  json=$(./src/scripts/host/guest-ssh.sh -c "& C:\\bsod-detector\\src\\scripts\\guest\\collect-guest.ps1 -OutputDir C:\\bsod-detector\\output\\sweep-${codeHex}" 2>&1) || true
+  json=$(./src/scripts/host/guest-ssh.sh -c "& C:\\bsod-detector\\scripts\\collect-guest.ps1 -OutputDir C:\\bsod-detector\\output\\sweep-${codeHex}" 2>&1) || true
   if [[ -n "${json}" ]]; then
     echo "${json}" > "${sweepDir}/collect-guest.json"
     echo "${json}"

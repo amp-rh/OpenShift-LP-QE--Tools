@@ -12,7 +12,7 @@
 # point this at anything but a disposable/snapshotted test VM.
 #
 # Usage:
-#   src/scripts/host/crash-injector/run-dry-run.sh [--code <hex>] [--no-revert] [--out <dir>]
+#   src/scripts/crash-injector/run-dry-run.sh [--code <hex>] [--no-revert] [--out <dir>]
 #
 # Defaults: code=0x19 (BAD_POOL_HEADER), revert=yes,
 #           out=<repo>/output/dryrun-<timestamp>
@@ -20,7 +20,7 @@ set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 typeset here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-typeset repo; repo="$(cd "${here}/../../../.." && pwd)"   # crash-injector -> scripts -> src -> app root
+typeset repo; repo="$(cd "${here}/../../.." && pwd)"   # crash-injector -> scripts -> src -> app root
 typeset vmName="${VM_NAME:-bsod-test}"
 typeset gssh="${repo}/src/scripts/host/guest-ssh.sh"
 typeset snapshot="${SNAPSHOT:-crashme-installed}"
@@ -46,7 +46,7 @@ function Log () { echo "[dry-run] $*" >&2; true; }
 function LookupParams () {
   python3 -c "
 import json, sys
-tm = json.load(open('${repo}/src/data/host/trigger-methods.json'))['codes']
+tm = json.load(open('${repo}/src/data/trigger-methods.json'))['codes']
 code = sys.argv[1].upper().replace('0X', '0x')
 if not code.startswith('0x'):
     code = '0x' + code

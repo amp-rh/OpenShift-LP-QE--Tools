@@ -18,7 +18,7 @@ folder — use `../watch-crash.sh` and friends instead.
 | `diag-critical-api.ps1` | Validates the `RtlSetProcessIsCritical` P/Invoke path **without** crashing — for debugging a trigger that silently no-ops. |
 | `prep-guest.ps1` | One-time golden-guest prep: kernel-dump CrashControl, system-managed page file, and **installs the CrashMe driver**. |
 | `run-dry-run.sh` | Host-side one-shot loop: revert → boot → trigger one bug check → delegate to `../collect-all.sh`. |
-| `sweep-crashme.sh` | Host-side sweep of all 19 `KeBugCheckEx` codes from `../../data/host/trigger-methods.json`. |
+| `sweep-crashme.sh` | Host-side sweep of all 19 `KeBugCheckEx` codes from `../../data/trigger-methods.json`. |
 | `test-driver/` | The **CrashMe** kernel driver (`crashme.sys` + `crashme-ctl.exe`) — the actual bug-check payload, built with mingw64. |
 
 ## Dependencies outside this folder
@@ -26,11 +26,11 @@ folder — use `../watch-crash.sh` and friends instead.
 The host-side harnesses drive a local libvirt test VM using utilities that live
 in the parent `src/scripts/` (they are shared with, or generic to, the detector):
 
-- `../vmctl.sh` + `../bsod-test.domain.xml` — define/snapshot/revert the golden VM.
-- `../guest-ssh.sh` — run PowerShell in the guest over SSH.
-- `../install-ssh-key.ps1` — provision key auth in the guest.
-- `../collect-all.sh` — evidence collection (invoked by `run-dry-run.sh`).
-- `../../data/host/trigger-methods.json` — per-code `KeBugCheckEx` parameters.
+- `../host/vmctl.sh` + `../host/bsod-test.domain.xml` — define/snapshot/revert the golden VM.
+- `../host/guest-ssh.sh` — run PowerShell in the guest over SSH (trigger-only, not collection).
+- `../host/collect-all.sh` — legacy evidence collection (invoked by `run-dry-run.sh`).
+- `../host/collect-offline.sh` — offline-first evidence collection.
+- `../../../src/data/trigger-methods.json` — per-code `KeBugCheckEx` parameters.
 
 ## Test VM model
 
@@ -50,15 +50,15 @@ All commands target `qemu:///system` (runs as root via libvirtd; be in the
 export LIBVIRT_DEFAULT_URI=qemu:///system
 
 # one crash, specific code:
-./src/scripts/host/crash-injector/run-dry-run.sh --code 0x19
+./src/scripts/crash-injector/run-dry-run.sh --code 0x19
 
 # full KeBugCheckEx sweep (all 19 codes):
-./src/scripts/host/crash-injector/sweep-crashme.sh
+./src/scripts/crash-injector/sweep-crashme.sh
 ```
 
 **Driver Verifier is enabled** in the golden guest (it changes several outcomes;
 notably `0x0A` is observed as `0xD1`). If you disable it (`verifier /reset` +
-reboot), re-run the sweep to re-baseline `../../data/host/trigger-methods.json`.
+reboot), re-run the sweep to re-baseline `../../data/trigger-methods.json`.
 
 ## Rebuilding the baseline
 
@@ -70,22 +70,16 @@ installed, and Driver Verifier enabled. To rebuild from scratch:
 
 ```bash
 ./src/scripts/host/vmctl.sh start
-./src/scripts/host/guest-ssh.sh -f src/scripts/host/crash-injector/prep-guest.ps1   # idempotent
+./src/scripts/host/guest-ssh.sh -f src/scripts/crash-injector/prep-guest.ps1   # idempotent
 ./src/scripts/host/guest-ssh.sh -c 'Restart-Computer -Force'                   # activates page file
 ./src/scripts/host/vmctl.sh stop
 virsh snapshot-delete bsod-test clean-baseline; ./src/scripts/host/vmctl.sh snapshot
 ```
 
-To re-provision key auth on a fresh guest:
-
-```bash
-./src/scripts/host/guest-ssh.sh -f src/scripts/guest/install-ssh-key.ps1 -- "-PublicKey '$(cat .ssh/bsod-test.pub)'"
-```
-
 ## Recreating the VM from scratch
 
 ```bash
-./src/scripts/host/vmctl.sh define      # (re)define domain from ../bsod-test.domain.xml
+./src/scripts/host/vmctl.sh define      # (re)define domain from host/bsod-test.domain.xml
 ./src/scripts/host/vmctl.sh start
 ```
 

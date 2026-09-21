@@ -1,5 +1,5 @@
 {
-  "_comment": "Source of truth for chaos trigger definitions. src/scripts/host/crash-injector/sweep-chaos.sh reads this file. Each trigger defines a fault injection scenario (host-side, guest-side, hypervisor-level, or resource-exhaustion) that may produce a real BSOD through actual failure conditions, unlike the synthetic KeBugCheckEx triggers in trigger-methods.json. Scripts read this file; do not duplicate these entries elsewhere. Crash dump bypass bug filed as https://github.com/virtio-win/kvm-guest-drivers-windows/issues/1629.",
+  "_comment": "Source of truth for chaos trigger definitions. vm/sweep-chaos.sh reads this file. Each trigger defines a fault injection scenario (host-side, guest-side, hypervisor-level, or resource-exhaustion) that may produce a real BSOD through actual failure conditions, unlike the synthetic KeBugCheckEx triggers in trigger-methods.json. Scripts read this file; do not duplicate these entries elsewhere. Crash dump bypass bug filed as https://github.com/virtio-win/kvm-guest-drivers-windows/issues/1629.",
   "triggers": {
     "nmi-inject": {
       "name": "NMI injection",

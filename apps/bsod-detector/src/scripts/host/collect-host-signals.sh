@@ -44,7 +44,7 @@ set -euxo pipefail; shopt -s inherit_errexit
 
 typeset here=''; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 typeset repoRoot=''; repoRoot="$(cd "${here}/../../.." && pwd)"
-typeset signalsFile="${repoRoot}/src/data/host/host-signals.json"
+typeset signalsFile="${repoRoot}/src/data/host-signals.json"
 
 export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 typeset vmName="${VM_NAME:-bsod-test}"

@@ -6,7 +6,7 @@
 # (event logs, dumps, system context), and host-side signals (kernel log,
 # hypervisor config).
 #
-# Invoked by test harnesses (src/scripts/host/crash-injector/run-dry-run.sh) or by a CI post-step after any
+# Invoked by test harnesses (src/scripts/crash-injector/run-dry-run.sh) or by a CI post-step after any
 # test run that may have triggered a BSOD.
 #
 # Usage:
@@ -15,7 +15,7 @@
 #
 # Outputs: <out>/ containing:
 #   bsod-screenshot.png    - framebuffer capture (best frame from rapid burst)
-#   host-crash.dmp         - host-side WinDbg dump via elf2dmp (when VM preserved)
+#   guest-memory.elf       - host-side raw memory capture (when VM preserved)
 #   collect-guest.json     - structured guest-side report
 #   host-signals.json      - host-side kernel log + hyperv evidence
 #   Minidump/*.dmp         - crash dump files copied from guest
@@ -31,7 +31,7 @@ export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 typeset vm=""
 typeset outDir=""
 typeset sshCmd=""
-typeset guestScripts='C:/bsod-detector/src/scripts/guest'
+typeset guestScripts='C:/bsod-detector/scripts'
 typeset timeout=300
 
 while [[ $# -gt 0 ]]; do
@@ -68,10 +68,10 @@ if [[ "${domState}" == "crashed" || "${domState}" == "paused" ]]; then
   kill "${capturePid}" 2>/dev/null || true
   wait "${capturePid}" 2>/dev/null || true
 
-  Log "domain is preserved; attempting host-side memory dump via elf2dmp"
+  Log "domain is preserved; capturing raw memory via virsh dump"
   if "${scriptDir}/capture-host-dump.sh" --vm "${vm}" --out "${outDir}" > "${outDir}/capture-host-dump.json"; then
-    if [[ -f "${outDir}/host-crash.dmp" ]]; then
-      Log "host-side dump captured: host-crash.dmp"
+    if [[ -f "${outDir}/guest-memory.elf" ]]; then
+      Log "host-side raw memory captured: guest-memory.elf"
     fi
   else
     Log "WARNING: host-side dump failed (see capture-host-dump.json for details)"
@@ -166,7 +166,7 @@ if [[ -f "${outDir}/MEMORY.DMP" ]]; then
   dumpFiles+=("MEMORY.DMP")
 fi
 
-typeset hasHostDump=false; [[ -f "${outDir}/host-crash.dmp" ]] && hasHostDump=true
+typeset hasHostDump=false; [[ -f "${outDir}/guest-memory.elf" ]] && hasHostDump=true
 
 python3 - "${outDir}" "${hasScreenshot}" "${guestCollected}" "${hasHostSignals}" "${hasHostDump}" "${dumpFiles[@]}" <<'PY'
 import json, sys, os
@@ -199,7 +199,7 @@ summary = {
     "collectedAt": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
     "artifacts": {
         "screenshot": "bsod-screenshot.png" if has_screenshot else None,
-        "hostDump": "host-crash.dmp" if has_host_dump else None,
+        "hostDump": "guest-memory.elf" if has_host_dump else None,
         "guestReport": "collect-guest.json" if guest_collected else None,
         "hostSignals": "host-signals.json" if has_host_signals else None,
         "dumpFiles": dump_files,

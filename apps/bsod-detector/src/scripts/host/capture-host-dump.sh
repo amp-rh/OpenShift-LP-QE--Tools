@@ -1,36 +1,31 @@
 #!/usr/bin/env bash
-# capture-host-dump.sh - host-side crash dump via virsh dump + elf2dmp.
+# capture-host-dump.sh - host-side raw VM memory capture via virsh dump.
 #
 # When a Windows guest crashes and the domain enters the "crashed" state
 # (requires <on_crash>preserve</on_crash> in the domain XML), this script
-# captures a full physical memory dump from the host side and converts it
-# to a WinDbg-readable DMP file using QEMU's elf2dmp tool.
+# captures a full physical memory dump from the host side as a raw ELF
+# file. The raw ELF is delivered as-is — no runtime conversion, no PDB
+# downloads, no network dependency.
+#
+# The raw ELF can be analyzed offline with Volatility, or converted to a
+# WinDbg DMP later via elf2dmp if needed. Keeping the raw capture avoids
+# discarding the source data after a lossy conversion.
 #
 # This is a fallback for cases where the guest-side crash dump mechanism
 # fails (e.g., viostor StorPortGetUncachedExtension failure under
 # allocation pressure). See:
 #   https://github.com/virtio-win/kvm-guest-drivers-windows/issues/1629
-#   https://daynix.github.io/2023/05/23/Guest-Windows-debugging-and-crashdumping-under-QEMU-KVM-elf2dmp.html
 #
 # Prerequisites:
-#   - elf2dmp (Fedora: qemu-tools package)
 #   - virsh (libvirt)
-#   - Network access (elf2dmp downloads PDB from Microsoft symbol server)
 #   - Domain must be in "crashed" or "paused" state
 #
 # Usage:
 #   capture-host-dump.sh --vm <name> --out <dir>
 #
 # Output (stdout JSON):
-#   { "ok": true, "dumpFile": "host-crash.dmp", "method": "elf2dmp",
-#     "sizeBytes": N, "rawMemoryFile": "guest-memory.elf",
-#     "rawMemorySizeBytes": N, "warnings": [] }
-#
-# The raw ELF memory capture is kept as a backup artifact. elf2dmp downloads
-# PDBs from Microsoft's symbol server at runtime and needs an exact match for
-# the guest's kernel build; a mismatch can silently produce a corrupt DMP. If
-# that happens, the preserved ELF lets a developer re-convert offline with their
-# own matching symbols instead of re-crashing the guest. Never discard the source.
+#   { "ok": true, "dumpFile": "guest-memory.elf", "method": "virsh-memory-only",
+#     "sizeBytes": N, "warnings": [] }
 exec {BASH_XTRACEFD}>/dev/null
 set -euxo pipefail; shopt -s inherit_errexit
 
@@ -39,8 +34,11 @@ export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 typeset vm=""
 typeset outDir=""
 
+# Warn — print a diagnostic message to stderr.
 function Warn () { echo "capture-host-dump: $*" >&2; true; }
+# Die — print a fatal error to stderr and exit.
 function Die ()  { Warn "$*"; exit 2; }
+# Have — return 0 if the named command is available on PATH.
 function Have () { command -v "$1" >/dev/null 2>&1; }
 
 # Emit a JSON failure object to stdout and exit 1.
@@ -56,7 +54,6 @@ function EmitFailure () {
 }
 
 Have virsh    || Die "virsh not found"
-Have elf2dmp  || Die "elf2dmp not found (install qemu-tools)"
 Have jq       || Die "jq not found"
 
 while [[ $# -gt 0 ]]; do
@@ -75,7 +72,6 @@ mkdir -p "${outDir}"
 
 typeset -a warnings=()
 typeset elfFile="${outDir}/guest-memory.elf"
-typeset dmpFile="${outDir}/host-crash.dmp"
 
 typeset domState=''
 domState="$(virsh domstate "${vm}" 2>/dev/null)" || EmitFailure "could not query domain state for '${vm}'"
@@ -98,48 +94,21 @@ if [[ ! -f "${elfFile}" ]]; then
   EmitFailure "virsh dump completed but ELF file not found at ${elfFile}"
 fi
 
-chmod u+rw "${elfFile}" 2>/dev/null || warnings+=("could not fix permissions on ${elfFile}; elf2dmp may fail")
+chmod u+rw "${elfFile}" 2>/dev/null || warnings+=("could not fix permissions on ${elfFile}")
 
 typeset elfSize=''
 elfSize="$(stat -c%s "${elfFile}" 2>/dev/null)" || elfSize="unknown"
 Warn "ELF dump captured: ${elfFile} (${elfSize} bytes)"
 
-Warn "converting ELF to WinDbg DMP via elf2dmp (requires network for PDB download)"
-typeset elf2dmpOutput=''
-if elf2dmpOutput="$(elf2dmp "${elfFile}" "${dmpFile}" 2>&1)"; then
-  Warn "elf2dmp conversion succeeded"
-else
-  Warn "elf2dmp output: ${elf2dmpOutput}"
-  EmitFailure "elf2dmp conversion failed" "${elf2dmpOutput}" \
-    "raw ELF memory capture preserved at ${elfFile} for offline re-conversion"
-fi
-
-if [[ ! -f "${dmpFile}" ]]; then
-  EmitFailure "elf2dmp completed but DMP file not found at ${dmpFile}" \
-    "raw ELF memory capture preserved at ${elfFile} for offline re-conversion"
-fi
-
-# Keep the raw ELF as a backup artifact: elf2dmp can silently produce a corrupt
-# DMP on a PDB mismatch, and the source is unrecoverable once deleted. Preserve
-# it so conversion can be redone offline without re-crashing the guest.
-warnings+=("raw ELF memory capture kept as backup at ${elfFile}")
-
-typeset dmpSize=''
-dmpSize="$(stat -c%s "${dmpFile}" 2>/dev/null)" || dmpSize=0
-
-typeset elfSizeBytes=0
-elfSizeBytes="$(stat -c%s "${elfFile}" 2>/dev/null)" || elfSizeBytes=0
+Warn "raw ELF memory capture preserved at ${elfFile} (convert offline with elf2dmp if needed)"
 
 typeset warnsJson=''
 warnsJson="$(printf '%s\n' "${warnings[@]:-}" | jq -R . | jq -s 'map(select(length>0))')"
 
 jq -n \
-  --arg file "host-crash.dmp" \
-  --arg method "elf2dmp" \
-  --argjson size "${dmpSize}" \
-  --arg rawFile "guest-memory.elf" \
-  --argjson rawSize "${elfSizeBytes}" \
+  --arg file "guest-memory.elf" \
+  --arg method "virsh-memory-only" \
+  --argjson size "${elfSize}" \
   --argjson warnings "${warnsJson}" \
-  '{ ok: true, dumpFile: $file, method: $method, sizeBytes: $size,
-     rawMemoryFile: $rawFile, rawMemorySizeBytes: $rawSize, warnings: $warnings }'
+  '{ ok: true, dumpFile: $file, method: $method, sizeBytes: $size, warnings: $warnings }'
 true
