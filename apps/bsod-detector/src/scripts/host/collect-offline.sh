@@ -14,9 +14,10 @@
 #
 # Usage:
 #   collect-offline.sh --vm <name> --out <dir> [--disk <path>]
-#                      [--windows-root /Windows] [--skip-memory-dump]
+#                      [--windows-root <winRootDir>] [--skip-memory-dump]
 #
 # Output: <out>/ containing evidence-summary.json and all artifacts.
+####
 exec {BASH_XTRACEFD}>/dev/null
 set -euxo pipefail; shopt -s inherit_errexit
 
@@ -44,7 +45,7 @@ while [[ $# -gt 0 ]]; do
     --disk)          [[ $# -ge 2 ]] || { echo "collect-offline: --disk requires a value" >&2; exit 2; }; disk="$2"; shift 2 ;;
     --windows-root)  [[ $# -ge 2 ]] || { echo "collect-offline: --windows-root requires a value" >&2; exit 2; }; winRoot="$2"; shift 2 ;;
     --skip-memory-dump) skipMemDump=1; shift ;;
-    -h|--help)       sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help)       sed -n '/^#!/,/^####$/{/^#!/d;/^####$/d;s/^# \{0,1\}//p;}' "$0"; exit 0 ;;
     *) echo "collect-offline: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -54,22 +55,22 @@ done
 
 mkdir -p "${outDir}"
 
-# Log — print a timestamped diagnostic message to stderr.
-function Log () { echo "[collect-offline] $*" >&2; true; }
+# log — print a timestamped diagnostic message to stderr.
+function log () { echo "[collect-offline] $*" >&2; true; }
 
 typeset -a warnings=()
 
 # --- Phase 1: Raw memory backup (if domain is preserved after crash) ---
 typeset domState
-domState="$(DomainState "${vm}")"
-Log "domain state: ${domState}"
+domState="$(domain_state "${vm}")"
+log "domain state: ${domState}"
 
 typeset hasMemDump=false
 if [[ "${skipMemDump}" != "1" ]] && [[ "${domState}" == "crashed" || "${domState}" == "hung" ]]; then
-  Log "capturing raw memory via virsh dump --memory-only"
+  log "capturing raw memory via virsh dump --memory-only"
   if "${scriptDir}/capture-host-dump.sh" --vm "${vm}" --out "${outDir}" > "${outDir}/capture-host-dump.json" 2>/dev/null; then
     [[ -f "${outDir}/guest-memory.elf" ]] && hasMemDump=true
-    Log "raw memory captured: guest-memory.elf"
+    log "raw memory captured: guest-memory.elf"
   else
     warnings+=("raw memory dump failed (see capture-host-dump.json)")
   fi
@@ -77,14 +78,14 @@ fi
 
 # --- Phase 2: Stop the VM so the disk is consistent ---
 if [[ "${domState}" != "off" ]]; then
-  Log "stopping VM for consistent disk access"
-  KillVM "${vm}" || true
+  log "stopping VM for consistent disk access"
+  kill_vm "${vm}" || true
   sleep 2
 fi
 
 # --- Phase 3: Extract dumps + evtx from guest disk offline ---
 if [[ -z "${disk}" ]]; then
-  disk="$(GuestDisk "${vm}")" || true
+  disk="$(guest_disk "${vm}")" || true
 fi
 
 # shellcheck disable=SC2034  # extractOk/extractJson reserved for future use
@@ -95,7 +96,7 @@ if [[ -z "${disk}" ]]; then
 elif [[ ! -r "${disk}" ]]; then
   warnings+=("guest disk not readable: ${disk}")
 else
-  Log "extracting dumps + evtx from ${disk} via guestfs"
+  log "extracting dumps + evtx from ${disk} via guestfs"
   if command -v virt-copy-out >/dev/null 2>&1; then
     # shellcheck disable=SC2034  # extractOk/extractJson reserved for future use
     extractJson="$("${hostTools}/extract-dump.sh" --disk "${disk}" --out "${outDir}" --windows-root "${winRoot}" 2>/dev/null)" || true
@@ -122,7 +123,7 @@ fi
 [[ -f "${outDir}/MEMORY.DMP" ]] && dumpFiles+=("MEMORY.DMP")
 
 if [[ "${#dumpFiles[@]}" -gt 0 ]]; then
-  Log "parsing dump headers"
+  log "parsing dump headers"
   typeset firstDmp=""
   for d in "${dumpFiles[@]}"; do
     [[ -f "${outDir}/${d}" ]] && firstDmp="${outDir}/${d}" && break
@@ -139,18 +140,18 @@ shopt -s nullglob
 typeset -a evtxFiles=("${outDir}"/*.evtx "${outDir}"/winevt/*.evtx)
 shopt -u nullglob
 if [[ "${#evtxFiles[@]}" -gt 0 ]]; then
-  Log "parsing ${#evtxFiles[@]} .evtx file(s)"
+  log "parsing ${#evtxFiles[@]} .evtx file(s)"
   python3 "${scriptDir}/extract-evtx.py" --data-dir "${dataDir}" "${evtxFiles[@]}" \
     > "${outDir}/evtx-events.json" 2>/dev/null || true
   [[ -s "${outDir}/evtx-events.json" ]] && evtxParsed=true
 fi
 
 # --- Phase 6: Host-side signals ---
-Log "collecting host-side signals"
+log "collecting host-side signals"
 "${scriptDir}/collect-host-signals.sh" --vm "${vm}" > "${outDir}/host-signals.json" 2>/dev/null || true
 
 # --- Phase 7: Assemble evidence summary ---
-Log "assembling evidence summary"
+log "assembling evidence summary"
 # shellcheck disable=SC2034  # hasScreenshot reserved for screenshot capture phase
 typeset hasScreenshot=false
 typeset hasHostSignals=false
@@ -199,5 +200,5 @@ jq -n \
   > "${outDir}/evidence-summary.json" 2>/dev/null || true
 
 jq '.' "${outDir}/evidence-summary.json" 2>/dev/null || true
-Log "done. Evidence package: ${outDir}"
+log "done. Evidence package: ${outDir}"
 true

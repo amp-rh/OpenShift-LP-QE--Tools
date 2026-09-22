@@ -3,12 +3,12 @@
 load test-helper
 
 setup() {
-  SetupTemp
+  setup_temp
   COLLECT_OFFLINE="$REPO_ROOT/src/scripts/host/collect-offline.sh"
 }
 
 teardown() {
-  TeardownTemp
+  teardown_temp
 }
 
 @test "collect-offline exits 2 when --vm is missing" {

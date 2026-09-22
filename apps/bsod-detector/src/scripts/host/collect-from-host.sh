@@ -17,8 +17,8 @@
 # one JSON object to stdout (the script contract); diagnostics go to stderr.
 #
 # Usage:
-#   collect-from-host.sh --vm <name> [--mode detect|recover] [--out <dir>]
-#                        [--disk <path>] [--windows-root /Windows]
+#   collect-from-host.sh --vm <name> [--mode <detect|recover>] [--out <dir>]
+#                        [--disk <path>] [--windows-root <winRootDir>]
 #                        [--force] [--virsh-dump]
 #
 #   --mode detect   report guest state only (no disk access)
@@ -36,6 +36,7 @@
 #     "recovery": { "method": "none|guestfs-copy-out|guestfs-container|virsh-memory-dump",
 #                   "dumpFiles": ["MEMORY.DMP","Minidump/..."], "outputDir": "..." },
 #     "warnings": [ ... ] }
+####
 set -euxo pipefail; shopt -s inherit_errexit
 exec {BASH_XTRACEFD}>/dev/null
 
@@ -52,9 +53,12 @@ typeset winRoot="/Windows"
 typeset force=0
 typeset virshDump=0
 
-function Warn () { echo "collect-from-host: $*" >&2; true; }
-function Die  () { Warn "$*"; exit 2; }
-function Have () { command -v "$1" >/dev/null 2>&1; }
+# warn — print a diagnostic message to stderr.
+function warn () { echo "collect-from-host: $*" >&2; true; }
+# die — print a fatal error to stderr and exit.
+function die  () { warn "$*"; exit 2; }
+# have — return 0 if the named command is available on PATH.
+function have () { command -v "$1" >/dev/null 2>&1; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,21 +69,21 @@ while [[ $# -gt 0 ]]; do
     --windows-root) winRoot="$2"; shift 2 ;;
     --force)        force=1; shift ;;
     --virsh-dump)   virshDump=1; shift ;;
-    -h|--help)      sed -n '2,44p' "$0"; exit 0 ;;
-    *) Die "unknown arg: $1" ;;
+    -h|--help)      sed -n '/^#!/,/^####$/{/^#!/d;/^####$/d;s/^# \{0,1\}//p;}' "$0"; exit 0 ;;
+    *) die "unknown arg: $1" ;;
   esac
 done
 
-Have jq    || Die "jq not found"
-Have virsh || Die "virsh not found; install libvirt-client"
-[[ -n "${vmName}" ]] || Die "--vm is required"
-[[ "${mode}" == "detect" || "${mode}" == "recover" ]] || Die "--mode must be detect or recover"
+have jq    || die "jq not found"
+have virsh || die "virsh not found; install libvirt-client"
+[[ -n "${vmName}" ]] || die "--vm is required"
+[[ "${mode}" == "detect" || "${mode}" == "recover" ]] || die "--mode must be detect or recover"
 
 # 1. Guest state via libvirt.
 typeset domState=''
 domState="$(virsh domstate "${vmName}" 2>/dev/null | sed -n '1p' | sed 's/[[:space:]]*$//')" \
-  || Die "VM '${vmName}' not found (virsh domstate failed)"
-[[ -n "${domState}" ]] || Die "VM '${vmName}' not found (empty domstate)"
+  || die "VM '${vmName}' not found (virsh domstate failed)"
+[[ -n "${domState}" ]] || die "VM '${vmName}' not found (empty domstate)"
 
 typeset -a warns=()
 
@@ -116,7 +120,8 @@ typeset crashDetected="false"
 typeset method="none"
 typeset filesJson="[]"
 
-function Emit () {
+# emit — write the final JSON result object to stdout.
+function emit () {
   typeset outField="${out}"
   jq -n \
     --arg vm "${vmName}" --arg mode "${mode}" --arg gs "${guestState}" \
@@ -131,7 +136,7 @@ function Emit () {
 
 # 4. Detect-only: report and stop.
 if [[ "${mode}" == "detect" ]]; then
-  Emit
+  emit
   exit 0
 fi
 
@@ -163,10 +168,10 @@ fi
 # 5a. Offline dump pull via the existing extractor (libguestfs, host or container).
 if [[ "${canRead}" == "1" ]]; then
   typeset extractJson=""
-  if Have virt-copy-out; then
+  if have virt-copy-out; then
     extractJson="$("${hostTools}/extract-dump.sh" --disk "${disk}" --out "${out}" --windows-root "${winRoot}")" || true
     method="guestfs-copy-out"
-  elif Have podman; then
+  elif have podman; then
     extractJson="$("${hostTools}/run.sh" --disk "${disk}" --out "${out}")" || true
     method="guestfs-container"
   else
@@ -196,5 +201,5 @@ fi
 
 # Parsing the recovered dumps is delegated to parse-dump-header.sh /
 # analyze-dump.ps1 (the same logic collect-guest.ps1 uses), not duplicated here.
-Emit
+emit
 true
