@@ -17,13 +17,18 @@
 FROM registry.fedoraproject.org/fedora-minimal:41
 
 # libguestfs needs an appliance; the package pulls a prebuilt one on Fedora.
-RUN microdnf install -y \
-        libguestfs-tools-c \
-        qemu-img \
-        libvirt-client \
-        python3 \
-        jq \
-    && microdnf clean all
+RUN <<run-EOF
+set -euxo pipefail; shopt -s inherit_errexit
+microdnf install -y \
+    libguestfs-tools-c \
+    qemu-img \
+    libvirt-client \
+    python3 \
+    python3-pip \
+    jq
+pip3 install --no-cache-dir python-evtx
+microdnf clean all
+run-EOF
 
 # libguestfs runs its own tiny KVM appliance; allow TCG fallback when the
 # container has no /dev/kvm so extraction still works (just slower).

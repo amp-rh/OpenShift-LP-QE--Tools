@@ -3,23 +3,16 @@
 #
 # Wraps `podman run` so the containerized libguestfs can read the guest qcow2
 # and write recovered dumps into the project's git-ignored output dir.
-#
-# Podman conventions used here:
-#   --rm                     ephemeral; no leftover containers
-#   -v ...:...:ro,Z          read-only bind for the disk image; :Z relabels for SELinux
-#   -v ...:...:Z             read-write bind for output; :Z relabels for SELinux
-#   --userns=keep-id         files land owned by the invoking user (rootless)
-#   --security-opt label=... only if relabel fails on a shared path
+# See README.md for podman configuration details.
 #
 # Usage:
+#   host-tools/run.sh --disk <imgFile> [--out <outDir>]
+#
+# Examples:
 #   host-tools/run.sh --disk /var/lib/libvirt/images/bsod-test.qcow2
 #   host-tools/run.sh --disk <img> --out ./output/dumps
 #
-# Build the image first (from the repo root):
-#   make -C image/container/bsod-detector build IMAGE_TAG=host-tools
-#   # or:  podman build -t bsod-host-tools \
-#   #        -f image/container/bsod-detector/Dockerfile apps/bsod-detector
-# Override the image name with BSOD_HOST_IMAGE if you tagged it differently.
+# See README.md for build instructions and BSOD_HOST_IMAGE override.
 set -euxo pipefail; shopt -s inherit_errexit
 
 typeset image="${BSOD_HOST_IMAGE:-bsod-host-tools}"
@@ -33,7 +26,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --disk) disk="$2"; shift 2 ;;
     --out)  out="$2"; shift 2 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "run.sh: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -62,4 +55,5 @@ exec podman run --rm \
   -v "${disk}":/images/"$(basename "${disk}")":ro \
   -v "${out}":/out:Z \
   "${image}" \
+  -- \
   --disk /images/"$(basename "${disk}")" --out /out
