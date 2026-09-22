@@ -29,7 +29,9 @@ exec {BASH_XTRACEFD}>/dev/null
 typeset disk=''
 typeset out='/out'
 typeset winRoot='/Windows'
+# Warn — print a diagnostic message to stderr.
 function Warn () { echo "extract-dump: $*" >&2; true; }
+# Emit — write the final JSON result object to stdout.
 function Emit () {
   printf '{"ok":%s,"disk":%s,"outputDir":%s,"dumpFiles":%s,"warnings":%s}\n' \
     "$1" "$(jq -Rn --arg v "${disk}" '$v')" "$(jq -Rn --arg v "${out}" '$v')" \
@@ -57,6 +59,7 @@ typeset -a found=()
 
 # Locate the Windows partition automatically; -i inspects the OS layout.
 # virt-copy-out reads read-only by default.
+# CopyOut — copy a file from the guest disk image to the output directory.
 function CopyOut () {
   typeset src="${winRoot}/$1"
   if virt-ls -a "${disk}" "${src}" >/dev/null 2>&1; then
@@ -80,6 +83,21 @@ if virt-ls -a "${disk}" "${winRoot}/Minidump" >/dev/null 2>&1; then
 else
   warns+=("no Minidump directory found")
 fi
+
+# Event log files (.evtx) for offline crash-event parsing
+typeset evtxDir="${winRoot}/System32/winevt/Logs"
+typeset -a evtxTargets=("System.evtx" "Application.evtx")
+mkdir -p "${out}/winevt" 2>/dev/null || true
+for evtxName in "${evtxTargets[@]}"; do
+  if CopyOut "System32/winevt/Logs/${evtxName}"; then
+    # virt-copy-out preserves the path structure; move to our flat winevt/ dir
+    typeset srcEvtx="${out}/${evtxName}"
+    [[ -f "${srcEvtx}" ]] && mv "${srcEvtx}" "${out}/winevt/${evtxName}" 2>/dev/null || true
+    found+=("winevt/${evtxName}")
+  else
+    warns+=("${evtxName} not found at ${evtxDir}")
+  fi
+done
 
 typeset filesJson=''
 filesJson="$(printf '%s\n' "${found[@]:-}" | jq -Rn '[inputs | select(length > 0)]')"

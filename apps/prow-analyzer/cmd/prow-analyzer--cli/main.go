@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/RedHatQE/OpenShift-LP-QE--Tools/apps/prow-analyzer/pkg/analyzer"
+	"github.com/RedHatQE/OpenShift-LP-QE--Tools/apps/prow-analyzer/pkg/audit"
 )
 
 func main() {
@@ -49,16 +50,42 @@ func main() {
 
 	a := analyzer.NewAnalyzer(*mcpURL, *token, *prompt)
 
+	// Display the mandatory Red Hat AI agent notice and the persistent review
+	// notice at the point of first interaction.
+	fmt.Printf("%s\n%s\n\n", analyzer.Disclaimer, analyzer.ReviewNotice)
+
 	fmt.Printf("🔍 Analyzing Prow failure...\n")
 	fmt.Printf("URL: %s\n\n", jobURL)
 
-	result, err := a.AnalyzeFailure(context.Background(), jobURL)
+	// Establish a correlation ID and record the interaction trigger (audit 1/3).
+	ctx := audit.WithInteractionID(context.Background(), "cli:"+jobURL)
+	audit.Received(ctx, "cli", os.Getenv("USER"), "", jobURL)
+
+	// Prow Analyzer only explains failures; skip jobs that passed.
+	if a.JobOutcomeFor(ctx, jobURL) == analyzer.OutcomePassed {
+		audit.Outcome(ctx, "skipped", "reason", "job_passing")
+		fmt.Printf("✅ This Prow job passed — no failure analysis needed.\n")
+		return
+	}
+
+	result, err := a.AnalyzeFailure(ctx, jobURL)
 	if err != nil {
+		audit.Outcome(ctx, "failed", "error", err.Error())
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	// Audit the AI action / outcome (event 3/3): metadata only, not the content.
+	audit.Outcome(ctx, "success",
+		"duration_ms", result.Duration.Milliseconds(),
+		"response_chars", len(result.Analysis),
+		"response_sha256", audit.Hash(result.Analysis),
+	)
 
+	// Label the AI-generated content at the point of delivery (top and bottom).
+	fmt.Printf("%s — the following analysis is AI-generated:\n\n", analyzer.AILabel)
 	fmt.Printf("%s\n", result.Analysis)
 	fmt.Printf("\n---\n")
-	fmt.Printf("Analysis completed in %.1fs\n", result.Duration.Seconds())
+	fmt.Printf("%s • Analysis completed in %.1fs\n", analyzer.AILabel, result.Duration.Seconds())
+	// Re-display the notices alongside the output that must be reviewed before use.
+	fmt.Printf("\n%s\n%s\n", analyzer.ReviewNotice, analyzer.Disclaimer)
 }

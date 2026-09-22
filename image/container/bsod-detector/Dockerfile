@@ -11,6 +11,7 @@
 #   - qemu-img         : inspect/convert disk images
 #   - libvirt-client   : virsh, to query guest state (via mounted socket)
 #   - python3          : dump-header parsing helpers
+#   - python-evtx      : offline Windows .evtx event log parsing
 #
 # Build:  podman build -t bsod-host-tools host-tools/
 # Run:    use host-tools/run.sh (wires up the right mounts).

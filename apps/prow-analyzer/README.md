@@ -2,6 +2,23 @@
 
 Automated Prow CI failure analysis using Red Hat's ship-help MCP (AI helpdesk).
 
+> ⚠️ **Prow Analyzer is a Red Hat AI agent. Always review AI-generated output
+> prior to use — outputs are for internal use only.** New users should start with
+> the **[User Guide](doc/user-guide.md)**.
+
+## Documentation
+
+- **[User Guide](doc/user-guide.md)** — start here: purpose, quick start,
+  limitations, best practices, review/undo, data handling, RBAC, troubleshooting,
+  and contacts.
+- [Capabilities & Inventory](doc/capabilities-inventory.md) — code-verified list
+  of every tool, API, function, and data source the agent can access.
+- [Data Flow & Architecture Diagram](doc/dataflow-architecture.md) — components,
+  data flows, trust boundaries, and code/data repositories (Mermaid).
+- [Architecture & Usage](doc/architecture.md) — components, MCP protocol flow,
+  configuration, and deployment internals.
+- [Deployment quick start](doc/deployment.md).
+
 ## Features
 
 - **CLI tool**: Analyze any Prow job URL from the command line

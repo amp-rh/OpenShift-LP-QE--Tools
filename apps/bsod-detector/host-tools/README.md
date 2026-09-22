@@ -6,19 +6,20 @@ reproducible and does not install libguestfs/qemu tooling directly on the host.
 ## Why a container
 
 On a **Linux/KVM** host, the host-side job from
-[`../docs/development-notes.md`](../docs/development-notes.md#what-the-tools-gather-by-perspective)
-("mount the guest VHDX to pull MEMORY.DMP when the guest won't boot") maps to: open the guest **qcow2**
+[`../docs/tool-selection.md`](../docs/tool-selection.md) ("mount the guest VHDX
+to pull MEMORY.DMP when the guest won't boot") maps to: open the guest **qcow2**
 offline with **libguestfs** and copy the dumps out of the NTFS filesystem. The
 image bundles libguestfs, qemu-img, and libvirt-client for that purpose.
 
-> The `src/scripts/host/collect-from-host.ps1` script targets a **Hyper-V** host
+> The `src/scripts/collect-from-host.ps1` script targets a **Hyper-V** host
 > (Mount-VHD / LiveKd). This container is the **Linux/KVM** equivalent for the
 > actual host we run on. Both do the same job from their respective host OS.
 
 ## Contents
 
-- `extract-dump.sh` — (runs in-container) copies `MEMORY.DMP` and
-  `Minidump\*.dmp` out of a disk image; emits one JSON result to stdout.
+- `extract-dump.sh` — (runs in-container) copies `MEMORY.DMP`,
+  `Minidump\*.dmp`, and `.evtx` event log files (System.evtx,
+  Application.evtx) out of a disk image; emits one JSON result to stdout.
 - `run.sh` — (runs on host) `podman run` wrapper wiring the correct mounts.
 
 The container **Dockerfile** and build **Makefile** live in the repo's image

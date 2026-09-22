@@ -50,7 +50,7 @@ $desired = @{
     AlwaysKeepMemoryDump = 1
     Overwrite            = 1
     LogEvent             = 1
-    AutoReboot           = 1
+    AutoReboot           = 0
 }
 foreach ($k in $desired.Keys) {
     $cur = (Get-ItemProperty -Path $cc -Name $k -ErrorAction SilentlyContinue).$k

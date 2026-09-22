@@ -41,7 +41,37 @@ param(
     [switch]$VerifyOnly
 )
 
-. "$PSScriptRoot\..\lib\Common.ps1"
+# --- standalone helpers (no Common.ps1 dependency) ---
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..'))
+$script:DataDir  = Join-Path $script:RepoRoot 'src\data'
+
+function Get-BsodData {
+    <# .SYNOPSIS Load a source-of-truth JSON file from data/. #>
+    param([Parameter(Mandatory)][string]$Name)
+    $p = Join-Path $script:DataDir $Name
+    if (-not (Test-Path $p)) { throw "Data file not found: $p" }
+    Get-Content -Raw -Path $p | ConvertFrom-Json
+}
+function Write-JsonResult {
+    <# .SYNOPSIS Emit the script's single JSON result object to stdout. #>
+    param([Parameter(Mandatory)]$Object)
+    $Object | ConvertTo-Json -Depth 12
+}
+function Fail {
+    <# .SYNOPSIS Emit a structured error result to stdout and exit non-zero. #>
+    param([Parameter(Mandatory)][string]$Message, [int]$ExitCode = 1)
+    Write-JsonResult ([ordered]@{ ok = $false; error = $Message; script = 'configure-dumps.ps1' })
+    exit $ExitCode
+}
+function Test-IsAdministrator {
+    <# .SYNOPSIS Return $true if the current process is running elevated. #>
+    $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $p  = New-Object System.Security.Principal.WindowsPrincipal($id)
+    $p.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
 
 $cfg = Get-BsodData 'crash-control.json'
 

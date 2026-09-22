@@ -166,7 +166,7 @@ function CollectAfterReboot () {
   fi
   rebooted=true
   Log "running collect-guest.ps1 ..."
-  if ! Ga exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\bsod-detector\src\scripts\guest\collect-guest.ps1' \
+  if ! Ga exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\bsod-detector\src\scripts\collect-guest.ps1' \
     2>/dev/null | sed -n '/^{/,$p' > "${outDir}/collect-guest.json"; then
     true
   fi
