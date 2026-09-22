@@ -14,8 +14,4 @@ one-time configuration only.
 | `configure-dumps.ps1` | Configure Windows CrashControl registry settings (dump type, `AutoReboot=0`, page file adequacy). One-time guest setup. |
 | `clear-dumps.ps1` | Delete existing crash dumps before a test so evidence contains only the new crash. |
 
-## Crash injection scripts
-
-Guest-side crash injection scripts (trigger-bsod.ps1, install.ps1, etc.) live
-under [`../crash-injector/`](../crash-injector/README.md) — they are test-only
-and quarantined from the detection/collection pipeline.
+See [`../crash-injector/README.md`](../crash-injector/README.md) for crash injection test scripts.

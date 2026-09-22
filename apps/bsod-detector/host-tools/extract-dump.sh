@@ -7,11 +7,22 @@
 # what was found (the script contract; diagnostics go to stderr).
 #
 # Usage:
-#   extract-dump --disk /images/bsod-test.qcow2 --out /out [--windows-root /Windows]
+#   extract-dump --disk <imgFile> [--out <outDir>] [--windows-root <winRootDir>]
+#
+# Parameters:
+#   --disk <imgFile>           Path to the guest disk image (qcow2) [required]
+#   --out <outDir>             Output directory for recovered dumps (default: /out)
+#   --windows-root <winRootDir> Windows root path in the disk (default: /Windows)
+#
+# Examples:
+#   extract-dump --disk /images/bsod-test.qcow2
+#   extract-dump --disk /images/bsod-test.qcow2 --out /out
+#   extract-dump --disk /images/bsod-test.qcow2 --out /out --windows-root /Windows
 #
 # Output (stdout JSON):
 #   { "ok": true, "disk": "...", "outputDir": "/out",
 #     "dumpFiles": ["MEMORY.DMP","Minidump/..."], "warnings": [ ... ] }
+####
 set -euxo pipefail; shopt -s inherit_errexit
 exec {BASH_XTRACEFD}>/dev/null
 
@@ -34,7 +45,7 @@ while [[ $# -gt 0 ]]; do
     --out) out="$2"; shift 2 ;;
     --windows-root) winRoot="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,16p' "$0"; exit 0 ;;
+      sed -n '/^#!/,/^####$/{/^#!/d;/^####$/d;s/^# //p;}' "$0"; exit 0 ;;
     *) Warn "unknown arg: $1"; exit 2 ;;
   esac
 done
@@ -89,9 +100,9 @@ for evtxName in "${evtxTargets[@]}"; do
 done
 
 typeset filesJson=''
-filesJson="$(printf '%s\n' "${found[@]:-}" | jq -R . | jq -s 'map(select(length>0))')"
+filesJson="$(printf '%s\n' "${found[@]:-}" | jq -Rn '[inputs | select(length > 0)]')"
 typeset warnJson=''
-warnJson="$(printf '%s\n' "${warns[@]:-}" | jq -R . | jq -s 'map(select(length>0))')"
+warnJson="$(printf '%s\n' "${warns[@]:-}" | jq -Rn '[inputs | select(length > 0)]')"
 
 if [[ "${#found[@]}" -eq 0 ]]; then Emit false; exit 1; fi
 Emit true

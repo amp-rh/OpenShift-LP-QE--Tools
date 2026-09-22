@@ -1,7 +1,6 @@
 # Host-Side Scripts
 
-Bash and Python scripts that run on the **Linux host** (KVM/libvirt or
-KubeVirt/OpenShift node), not inside the Windows guest.
+Bash and Python scripts that run on the **Test Host**, not inside the Windows guest.
 
 ## Detection & collection
 

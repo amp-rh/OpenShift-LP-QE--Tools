@@ -36,7 +36,10 @@ Both write into one shared evidence folder.
                          ▲  every script reads its tables here (no hard-coding)
                          │
       ┌──────────────────┴───────────────────────────────────┐
-      │  HOST-SIDE ONLY — on the Linux host / KubeVirt node    │
+      │  HOST-SIDE ONLY — runs on the Test Host, which is any   │
+      │  machine that can reach the VM:                         │
+      │  • The local KVM/libvirt host (QEMU VM)                 │
+      │  • Any system / CI runner with oc / virtctl access      │
       │  (Bash + Python)  src/scripts/host/                    │
       │                                                        │
       │ • collect-offline.sh      offline evidence orchestrator │
@@ -105,14 +108,3 @@ Three cases:
 
 > **Bottom line:** we can grab memory without a restart, but a *native Windows crash dump* is
 > inherently tied to the BSOD-and-reboot that Windows performs itself.
-
----
-
-## 4. Status & the ask
-
-- **Validated end-to-end** on a test VM against **two different crash types** — every stage worked
-  and all sources agreed on the cause. One real analysis bug was found and **fixed**.
-- The **TLB-flush signal tool is now adapted for OpenShift** and tested with cluster-shaped inputs.
-- **Ask:** ready to trial in the **non-production sandbox on Vijay's TLB-flush setup**. The only open
-  question is *how the crash is triggered* there — that's the research goal, not a tooling gap.
-  Everything needed to **catch, capture, and analyze** the crash is in place and tested.
