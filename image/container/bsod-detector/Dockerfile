@@ -13,13 +13,16 @@
 #   - python3          : dump-header parsing helpers
 #   - python-evtx      : offline Windows .evtx event log parsing
 #
-# Build:  podman build -t bsod-host-tools host-tools/
-# Run:    use host-tools/run.sh (wires up the right mounts).
+# Build:  cd image/container/bsod-detector && podman build -t bsod-detector -f Dockerfile ../../../apps/bsod-detector
+# Run:    use apps/bsod-detector/host-tools/run.sh (wires up the right mounts).
+#         Or: make -C image/container/bsod-detector build
 FROM registry.fedoraproject.org/fedora-minimal:41
+
+SHELL ["/bin/bash", "-c"]
 
 # libguestfs needs an appliance; the package pulls a prebuilt one on Fedora.
 RUN <<run-EOF
-set -euxo pipefail; shopt -s inherit_errexit
+set -euxo pipefail
 microdnf install -y \
     libguestfs-tools-c \
     qemu-img \
@@ -27,7 +30,7 @@ microdnf install -y \
     python3 \
     python3-pip \
     jq
-pip3 install --no-cache-dir python-evtx
+pip3 install --no-cache-dir python-evtx==0.8.1
 microdnf clean all
 run-EOF
 
