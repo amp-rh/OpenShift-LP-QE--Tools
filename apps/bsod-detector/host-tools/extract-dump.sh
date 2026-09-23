@@ -158,7 +158,7 @@ for evtxName in "${evtxTargets[@]}"; do
   copy_rc=0
   copy_out "System32/winevt/Logs/${evtxName}" "${out}" || copy_rc=$?
   if [[ ${copy_rc} -eq 0 ]]; then
-    # virt-copy-out preserves the path structure; move to our flat winevt/ dir
+    # virt-copy-out extracts the file flat into $out; move it into winevt/ subdir
     typeset srcEvtx="${out}/${evtxName}"
     if [[ -f "${srcEvtx}" ]]; then
       if mv "${srcEvtx}" "${out}/winevt/${evtxName}" 2>/dev/null; then
