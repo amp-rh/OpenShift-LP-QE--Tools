@@ -36,7 +36,7 @@ BSOD detection is a **3-tier distributed system**:
 │   CI Operator           │  Orchestration host: manages test execution
 │   (Local/CI Agent)      │
 │                         │
-│ • stakeout.sh           │
+│ • watch-crash.sh        │
 │ • guest-agent.py        │
 │ • collect-from-host.sh  │
 │ • crash-injector/       │
@@ -69,7 +69,7 @@ BSOD detection is a **3-tier distributed system**:
 
 Scripts executed on the orchestration layer to coordinate the entire test pipeline:
 
-- `stakeout.sh` — main orchestrator (watch, preflight, collect)
+- `watch-crash.sh` — natural BSOD detection with automatic escalation
 - `guest-agent.py` — tunnel PowerShell commands into the VM
 - `collect-from-host.sh` — coordinate detection → capture → analysis
 - `src/scripts/crash-injector/` — intentional crash triggers
@@ -143,7 +143,7 @@ Windows VM (Guest)
     ↓
 Virt-Launcher Pod
     ↓ detects: Guest agent no longer responding
-    ↓ auto-stops VM (via stakeout.sh or manual)
+    ↓ auto-stops VM (via watch-crash.sh or manual)
     ↓
 CI Operator extracts evidence
     ↓ runs: ./host-tools/run.sh --disk <qcow2> --out ./evidence/dumps
@@ -393,7 +393,7 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
 3. **Notify CI Operator**:
    - Inform CI Operator when BSOD has been triggered
    - Provide timestamp for correlation
-   - CI Operator detects it automatically via `stakeout.sh watch`
+   - CI Operator detects it automatically via `watch-crash.sh`
 
 ### CI Operator Responsibilities
 
@@ -413,7 +413,7 @@ echo "Setup complete. Notify external test operator that VM is ready for BSOD."
 
 # Step 2: START DETECTION WATCHER (before external operator triggers BSOD)
 echo "=== Watching for externally-triggered BSOD (will block until detected or timeout) ==="
-./src/scripts/host/stakeout.sh watch \
+./src/scripts/host/watch-crash.sh \
   --provider kubevirt \
   --ns $NS \
   --vm $VM \
@@ -429,11 +429,11 @@ echo "=== Watching for externally-triggered BSOD (will block until detected or t
 #   3. Stop the VM
 #   4. Extract crash dumps offline via libguestfs
 
-# Step 3: COLLECT & VERIFY RESULTS (after stakeout.sh exits)
+# Step 3: COLLECT & VERIFY RESULTS (after watch-crash.sh exits)
 echo "=== Evidence collection complete ==="
 ls -lah ./evidence/
 cat ./evidence/evidence-summary.json | jq .
-cat ./evidence/stakeout-summary.json | jq .verdict
+cat ./evidence/evidence-summary.json | jq .verdict
 ```
 
 ### Execution Flow
@@ -443,7 +443,7 @@ External Test Operator             CI Operator              VM (Guest)
          │                                │                       │
          │ Prepares BSOD trigger         │                       │
          │                        ↓      │                       │
-         │ (notifies ready)  ←────────→ stakeout.sh watch ◀─ polls guest agent
+         │ (notifies ready)  ←────────→ watch-crash.sh ◀─ polls guest agent
          │                               │                       │
          │ Triggers BSOD              (watching, waiting)        │
          │ (external mechanism)         │                       │
@@ -455,7 +455,7 @@ External Test Operator             CI Operator              VM (Guest)
                                         │                       │
          │                              ← detects crash ──────→ Agent unresponsive
          │                              │                       │
-         │ (notifies done)              │ stakeout escalates:
+         │ (notifies done)              │ watch-crash escalates:
          └──────────────────→           │ 1. Screenshots
                                         │ 2. Captures memory
                                         │ 3. Stops VM
@@ -471,7 +471,7 @@ External Test Operator             CI Operator              VM (Guest)
 **Pre-BSOD Coordination:**
 1. ✅ CI Operator confirms `configure-dumps.ps1` executed successfully
 2. ✅ External Test Operator confirms readiness to trigger crash
-3. ✅ CI Operator initiates `stakeout.sh watch`
+3. ✅ CI Operator initiates `watch-crash.sh`
 4. ✅ Allow ~10 seconds for watch initialization
 
 **During BSOD Trigger:**
@@ -481,7 +481,7 @@ External Test Operator             CI Operator              VM (Guest)
 
 **Post-BSOD Collection:**
 8. ✅ External Test Operator notifies CI Operator upon crash completion
-9. ✅ CI Operator's `stakeout.sh watch` detects event automatically
+9. ✅ CI Operator's `watch-crash.sh` detects event automatically
 10. ✅ Evidence collection to `./evidence/` executes automatically
 
 ### Troubleshooting External Integration
@@ -686,7 +686,7 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py exec \
   powershell -Command 'C:\Temp\nmf\notmyfaultc64.exe /accepteula /crash 0x01'
 
 # Watch for natural BSOD
-./src/scripts/host/stakeout.sh watch \
+./src/scripts/host/watch-crash.sh \
   --provider kubevirt --ns $NS --vm $VM --out ./evidence
 ```
 
@@ -717,7 +717,7 @@ src/scripts/host/guest-ssh.sh -f src/scripts/crash-injector/setup-notmyfault.ps1
 src/scripts/host/guest-ssh.sh -c 'C:\Temp\nmf\notmyfaultc64.exe /accepteula /crash 0x01'
 
 # Watch for natural BSOD
-./src/scripts/host/stakeout.sh watch \
+./src/scripts/host/watch-crash.sh \
   --provider kvm --vm $VM_NAME --out ./evidence
 
 # Or extract from offline image directly
