@@ -22,7 +22,7 @@ SHELL ["/bin/bash", "-c"]
 
 # libguestfs needs an appliance; the package pulls a prebuilt one on Fedora.
 RUN <<run-EOF
-set -euxo pipefail; shopt -s inherit_errexit
+set -euxo pipefail
 microdnf install -y \
     libguestfs-tools-c \
     qemu-img \
