@@ -59,7 +59,7 @@ BSOD detection is a **3-tier distributed system**:
 │ Windows VM (Guest)      │  Test target: configuration and monitoring
 │                         │
 │ • configure-dumps.ps1   │
-│ • stage-toolkit.ps1     │
+│ • clear-dumps.ps1       │
 │ • NotMyFault.exe        │
 │ (crash trigger)         │
 └─────────────────────────┘
@@ -100,7 +100,7 @@ The hypervisor layer that manages the VM. Scripts here are invoked **indirectly*
 PowerShell scripts **inside** the Windows guest for one-time configuration:
 
 - `configure-dumps.ps1` — enable full crash dumps (CrashControl registry)
-- `stage-toolkit.ps1` — extract BSOD detector toolkit
+- `clear-dumps.ps1` — clear existing crash dumps before test
 - NotMyFault.exe — optional crash trigger utility
 
 **Execution context:**
@@ -175,7 +175,7 @@ export NS=windows-bsod
 
 # 1. Setup: Stage toolkit on guest
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
-  src/scripts/guest/stage-toolkit.ps1
+  src/scripts/guest/clear-dumps.ps1
 # Expected output: [uploaded ...] [exit 0]
 
 # 2. Setup: Configure crash dumps
@@ -273,7 +273,7 @@ C:\bsod-detector\src\scripts\guest\configure-dumps.ps1
 #   - MinidumpDir = C:\Windows\Minidump
 
 # 2. Stage toolkit (runs once)
-C:\bsod-detector\src\scripts\guest\stage-toolkit.ps1
+C:\bsod-detector\src\scripts\guest\clear-dumps.ps1
 
 # What it does:
 #   - Extracts bsod-src.zip
@@ -345,24 +345,29 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py ping
 ### Quick Reference
 
 ```bash
-# One-time setup (run once per VM)
+# ONE-TIME SETUP (run once per VM)
 export VM=win2022-vm-hjoshi1
 export NS=windows-bsod
 
-# 1. Configure crash dumps
-GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
-  src/scripts/guest/configure-dumps.ps1
-
-# 2. Stage BSOD toolkit
+# 1. Stage toolkit
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
   src/scripts/guest/stage-toolkit.ps1
 
-# 3. Setup crash trigger (if using NotMyFault injector)
+# 2. Configure crash dumps
+GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
+  src/scripts/guest/configure-dumps.ps1
+
+# 3. Setup crash trigger (if using NotMyFault)
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
   src/scripts/host/crash-injector/setup-notmyfault.ps1
 
-# After external BSOD generation is complete:
-# 4. Extract evidence (guest is now offline/crashed)
+# BEFORE EACH TEST
+# 4. Clear old dumps (optional, for clean evidence)
+GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
+  src/scripts/guest/clear-dumps.ps1
+
+# AFTER CRASH
+# 5. Extract evidence (guest is now offline/crashed)
 ./host-tools/run.sh --disk /var/lib/libvirt/images/win2022-vm-hjoshi1.qcow2 \
   --out ./evidence/dumps
 ```
@@ -402,7 +407,7 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
   src/scripts/guest/configure-dumps.ps1
 
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
-  src/scripts/guest/stage-toolkit.ps1
+  src/scripts/guest/clear-dumps.ps1
 
 echo "Setup complete. Notify external test operator that VM is ready for BSOD."
 
@@ -504,28 +509,37 @@ export VM=win2022-vm-hjoshi1
 export NS=windows-bsod
 export KUBECONFIG=<path-to-kubeconfig>
 
-# 1. Configure crash dumps (one-time setup)
+# ONE-TIME SETUP (run once per VM)
+
+# 1. Stage toolkit (one-time)
+GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
+  src/scripts/guest/stage-toolkit.ps1
+# Expected: Directories created, guest ready
+
+# 2. Configure crash dumps (one-time)
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
   src/scripts/guest/configure-dumps.ps1
-# Expected: Registry configured, AutoReboot=0 set
+# Expected: Registry configured, AutoReboot=0 set, dump type configured
 
-# 2. Clear existing dumps (optional, to isolate new crash)
-GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
-  src/scripts/guest/clear-dumps.ps1
-# Expected: Old dumps cleared
-
-# 3. Setup NotMyFault on guest
+# 3. Setup NotMyFault injector (one-time)
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
   src/scripts/host/crash-injector/setup-notmyfault.ps1
-# Expected: notmyfaultc64.exe present
+# Expected: notmyfaultc64.exe present in C:\Temp\nmf\
 
-# 4. Trigger the crash
+# PER-TEST SEQUENCE
+
+# 4. Clear existing dumps (before each test - optional but recommended)
+GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
+  src/scripts/guest/clear-dumps.ps1
+# Expected: Old dumps cleared, clean slate for new crash
+
+# 5. Trigger the crash
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py exec \
   powershell -NoProfile -ExecutionPolicy Bypass \
   -Command 'C:\Temp\nmf\notmyfaultc64.exe /accepteula /crash 0x01'
 # Expected: TIMEOUT (guest has crashed, this is expected)
 
-# 5. Extract evidence offline (guest is now stopped)
+# 6. Extract evidence offline (guest is now stopped)
 DISK_IMAGE=/var/lib/libvirt/images/win2022-vm-hjoshi1.qcow2
 ./host-tools/run.sh --disk $DISK_IMAGE --out ./evidence/dumps
 # Expected: MEMORY.DMP extracted, minidumps extracted, JSON result
@@ -554,17 +568,26 @@ export VM=win2022-vm-hjoshi1
 export NS=windows-bsod
 export KUBECONFIG=<path-to-kubeconfig>
 
-# 1. Configure crash dumps (one-time setup)
+# ONE-TIME SETUP (run once per VM)
+
+# 1. Stage toolkit (one-time)
+GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
+  src/scripts/guest/stage-toolkit.ps1
+# Expected: Directories created, guest ready
+
+# 2. Configure crash dumps (one-time)
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
   src/scripts/guest/configure-dumps.ps1
-# Expected: Registry configured, AutoReboot=0 set
+# Expected: Registry configured, AutoReboot=0 set, dump type configured
 
-# 2. Clear existing dumps (optional, to isolate new crash)
+# PER-TEST SEQUENCE
+
+# 3. Clear existing dumps (before each test - optional but recommended)
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
   src/scripts/guest/clear-dumps.ps1
-# Expected: Old dumps cleared
+# Expected: Old dumps cleared, clean slate for new crash
 
-# 3. Start watching for natural BSOD (blocks until detected)
+# 4. Start watching for natural BSOD (blocks until detected)
 ./src/scripts/host/watch-crash.sh \
   --ns $NS \
   --vm $VM \
