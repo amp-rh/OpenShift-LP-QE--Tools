@@ -41,9 +41,15 @@ function emit () {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --disk) disk="$2"; shift 2 ;;
-    --out) out="$2"; shift 2 ;;
-    --windows-root) winRoot="$2"; shift 2 ;;
+    --disk)
+      [[ -n "${2:-}" ]] || { warn "--disk requires a value"; exit 1; }
+      disk="$2"; shift 2 ;;
+    --out)
+      [[ -n "${2:-}" ]] || { warn "--out requires a value"; exit 1; }
+      out="$2"; shift 2 ;;
+    --windows-root)
+      [[ -n "${2:-}" ]] || { warn "--windows-root requires a value"; exit 1; }
+      winRoot="$2"; shift 2 ;;
     -h|--help)
       sed -n '/^#!/,/^####$/{/^#!/d;/^####$/d;s/^# \{0,1\}//p;}' "$0"; exit 0 ;;
     --)
