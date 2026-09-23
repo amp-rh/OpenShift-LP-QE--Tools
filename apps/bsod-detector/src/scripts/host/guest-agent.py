@@ -39,8 +39,10 @@ CONFIG (all optional -- the target is auto-resolved from the cluster)
     env vars at all; otherwise set GA_VM (and GA_NS if it is ambiguous).
 """
 import base64
+import gzip
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -166,7 +168,7 @@ def guest_put(local, guestpath):
             chunk = base64.b64encode(data[i:i + CH]).decode()
             agent({"execute": "guest-file-write",
                    "arguments": {"handle": handle, "buf-b64": chunk}}, timeout=600)
-            if (i + CH) % (50 * 1024 * 1024) == 0:  # Progress every 50MB
+            if (i + CH) // (50 * 1024 * 1024) > i // (50 * 1024 * 1024):  # Progress every 50MB
                 mb = (i + CH) // (1024 * 1024)
                 sys.stderr.write(f"  uploaded {mb}MB...\n")
                 sys.stderr.flush()
@@ -236,7 +238,7 @@ def guest_get(guestpath, local, chunk=3500 * 1024, auto_compress=True):
                 with open(local, "r+b" if offset else "wb") as f:
                     f.seek(offset); f.write(b)
                 offset += len(b); total = offset
-                if total % (25 * 1024 * 1024) == 0:  # Progress every 25MB
+                if total // (25 * 1024 * 1024) > (total - len(b)) // (25 * 1024 * 1024):  # Progress every 25MB
                     mb = total // (1024 * 1024)
                     sys.stderr.write(f"  {mb}MB...\n")
                     sys.stderr.flush()
@@ -251,15 +253,13 @@ def guest_get(guestpath, local, chunk=3500 * 1024, auto_compress=True):
 
     # Auto-decompress if we compressed on guest
     if compressed_on_guest and local.endswith('.gz'):
-        import gzip
-        import os
         sys.stderr.write(f"Decompressing {local}...\n")
         sys.stderr.flush()
         local_uncompressed = local[:-3]
         try:
             with gzip.open(local, 'rb') as f_in:
                 with open(local_uncompressed, 'wb') as f_out:
-                    f_out.write(f_in.read())
+                    shutil.copyfileobj(f_in, f_out)
             os.remove(local)
             local = local_uncompressed
             sys.stderr.write(f"✓ Decompressed to {local}\n")
