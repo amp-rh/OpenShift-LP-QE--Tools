@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -euo pipefail -c
 
-.PHONY: build push clean help validate
+.PHONY: build push clean help validate test
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
 
@@ -48,6 +48,10 @@ clean:
 	    podman rmi '$(IMAGE_FULL)' || true; \
 	}
 
+# Run BATS test suite
+test:
+	bats ../../../$(APP_DIR)/test/
+
 # Display help
 help:
 	@{ \
@@ -57,6 +61,7 @@ help:
 	    echo '  build    - Build container image (default: $(IMAGE_FULL))'; \
 	    echo '  push     - Build and push container image to registry'; \
 	    echo '  clean    - Remove local container image'; \
+	    echo '  test     - Run BATS test suite'; \
 	    echo '  validate - Validate required variables'; \
 	    echo ''; \
 	    echo 'Variables:'; \
