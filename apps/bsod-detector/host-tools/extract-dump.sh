@@ -30,6 +30,7 @@
 #   { "ok": true, "disk": "...", "outputDir": "/out",
 #     "dumpFiles": ["MEMORY.DMP","Minidump/..."], "warnings": [ ... ] }
 ####
+# Debug: redirect xtrace to FD 5 to keep stdout clean for JSON output
 set -euxo pipefail; shopt -s inherit_errexit
 exec {BASH_XTRACEFD}>/dev/null
 
