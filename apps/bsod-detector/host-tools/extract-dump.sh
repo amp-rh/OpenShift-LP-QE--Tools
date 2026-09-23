@@ -64,19 +64,44 @@ typeset -a found=()
 # Locate the Windows partition automatically; -i inspects the OS layout.
 # virt-copy-out reads read-only by default.
 # copy_out — copy a file from the guest disk image to the output directory.
+#   Returns: 0 = success, 1 = not found (expected), 2 = copy failed (unexpected).
 function copy_out () {
   typeset src="${winRoot}/$1"
-  if virt-ls -a "${disk}" "${src}" >/dev/null 2>&1; then
-    virt-copy-out -a "${disk}" "${src}" "${out}" 2>>/tmp/err && return 0
+  typeset dst="$2"
+  typeset rc=0
+
+  virt-copy-out -a "${disk}" "${src}" "${dst}" 2>/tmp/err || rc=$?
+
+  typeset err_content=""
+  [[ -s /tmp/err ]] && err_content=$(</tmp/err)
+
+  if [[ $rc -ne 0 ]]; then
+    if [[ "${err_content}" == *"No such file"* ]] || \
+       [[ "${err_content}" == *"not found"* ]] || \
+       [[ "${err_content}" == *"does not exist"* ]]; then
+      return 1  # not found (expected)
+    else
+      warn "virt-copy-out failed for ${src} (rc=${rc}): ${err_content}"
+      return 2  # copy failed (unexpected)
+    fi
   fi
-  return 1
+
+  # Success — but still capture any warnings
+  if [[ -n "${err_content}" ]]; then
+    warns+=("virt-copy-out warning for ${src}: ${err_content}")
+  fi
+  return 0
 }
 
 # MEMORY.DMP (kernel/complete dump)
-if copy_out "MEMORY.DMP"; then
+typeset copy_rc=0
+copy_out "MEMORY.DMP" "${out}" || copy_rc=$?
+if [[ ${copy_rc} -eq 0 ]]; then
   found+=("MEMORY.DMP")
-else
+elif [[ ${copy_rc} -eq 1 ]]; then
   warns+=("MEMORY.DMP not found - dump type may be misconfigured or none written")
+else
+  warns+=("MEMORY.DMP copy failed (rc=${copy_rc})")
 fi
 
 # Minidump directory (small dumps, one per crash)
@@ -93,13 +118,22 @@ typeset evtxDir="${winRoot}/System32/winevt/Logs"
 typeset -a evtxTargets=("System.evtx" "Application.evtx")
 mkdir -p "${out}/winevt" 2>/dev/null || true
 for evtxName in "${evtxTargets[@]}"; do
-  if copy_out "System32/winevt/Logs/${evtxName}"; then
+  copy_rc=0
+  copy_out "System32/winevt/Logs/${evtxName}" "${out}" || copy_rc=$?
+  if [[ ${copy_rc} -eq 0 ]]; then
     # virt-copy-out preserves the path structure; move to our flat winevt/ dir
     typeset srcEvtx="${out}/${evtxName}"
-    [[ -f "${srcEvtx}" ]] && mv "${srcEvtx}" "${out}/winevt/${evtxName}" 2>/dev/null || true
-    found+=("winevt/${evtxName}")
-  else
+    if [[ -f "${srcEvtx}" ]]; then
+      if mv "${srcEvtx}" "${out}/winevt/${evtxName}" 2>/dev/null; then
+        found+=("winevt/${evtxName}")
+      else
+        warns+=("Failed to move ${srcEvtx} to ${out}/winevt/${evtxName}")
+      fi
+    fi
+  elif [[ ${copy_rc} -eq 1 ]]; then
     warns+=("${evtxName} not found at ${evtxDir}")
+  else
+    warns+=("${evtxName} copy failed (rc=${copy_rc})")
   fi
 done
 
