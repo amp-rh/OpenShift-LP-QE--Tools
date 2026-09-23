@@ -179,7 +179,7 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py exec \
 
 # 3. Prepare: Setup NotMyFault
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
-  src/scripts/host/crash-injector/setup-notmyfault.ps1
+  src/scripts/crash-injector/setup-notmyfault.ps1
 # Expected output: [uploaded ...] notmyfaultc64.exe present: True
 
 # 4. Action: Trigger crash
@@ -352,7 +352,7 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
 
 # 3. Setup crash trigger (if using NotMyFault)
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
-  src/scripts/host/crash-injector/setup-notmyfault.ps1
+  src/scripts/crash-injector/setup-notmyfault.ps1
 
 # BEFORE EACH TEST
 # 4. Clear old dumps (optional, for clean evidence)
@@ -516,7 +516,7 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
 
 # 3. Setup NotMyFault injector (one-time)
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
-  src/scripts/host/crash-injector/setup-notmyfault.ps1
+  src/scripts/crash-injector/setup-notmyfault.ps1
 # Expected: notmyfaultc64.exe present in C:\Temp\nmf\
 
 # PER-TEST SEQUENCE
@@ -674,7 +674,7 @@ export NS=windows-bsod
 
 # Trigger crash injection
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
-  src/scripts/host/crash-injector/setup-notmyfault.ps1
+  src/scripts/crash-injector/setup-notmyfault.ps1
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py exec \
   powershell -Command 'C:\Temp\nmf\notmyfaultc64.exe /accepteula /crash 0x01'
 
