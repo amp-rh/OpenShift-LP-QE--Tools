@@ -188,26 +188,29 @@ def guest_get(guestpath, local, chunk=3500 * 1024, auto_compress=True):
     Seek-based + per-chunk retries ensure truncated responses don't desync."""
 
     # For large files, compress on guest first
+    compressed_on_guest = False
     if auto_compress and guestpath.endswith('MEMORY.DMP'):
         compressed_path = guestpath + '.gz'
-        sys.stderr.write(f"Compressing {guestpath} on guest (may take 1-2 min)...\n")
+        sys.stderr.write(f"Compressing {guestpath} on guest (may take 2-3 min)...\n")
         sys.stderr.flush()
         try:
             # Use PowerShell's built-in compression on Windows
-            agent({"execute": "guest-exec", "arguments": {
-                "path": "powershell.exe",
-                "arg": ["-NoProfile", "-Command",
-                        f"[System.IO.Compression.GZipStream]::CreateGZip("
-                        f"[System.IO.File]::OpenRead('{guestpath}'), "
-                        f"[System.IO.File]::Create('{compressed_path}')) | "
-                        f"ForEach-Object {{ $_.Dispose() }}; "
-                        f"Write-Host ('compressed: ' + (Get-Item {compressed_path}).Length + ' bytes')"],
-                "capture-output": True}}, timeout=600)
+            r = guest_exec("powershell.exe",
+                          ["-NoProfile", "-Command",
+                           f"$in = [System.IO.File]::OpenRead('{guestpath}'); "
+                           f"$out = [System.IO.File]::Create('{compressed_path}'); "
+                           f"$gz = New-Object System.IO.Compression.GZipStream($out, [System.IO.Compression.CompressionMode]::Compress); "
+                           f"$in.CopyTo($gz); $gz.Dispose(); $in.Dispose(); $out.Dispose(); "
+                           f"Write-Host ('compressed to ' + (Get-Item {compressed_path}).Length + ' bytes')"],
+                          poll_timeout=600)
             sys.stderr.write("✓ Compression complete\n")
+            sys.stderr.flush()
             guestpath = compressed_path
             local = local + '.gz'
+            compressed_on_guest = True
         except Exception as e:
             sys.stderr.write(f"⚠ Compression failed: {e}, proceeding uncompressed\n")
+            sys.stderr.flush()
 
     handle = agent({"execute": "guest-file-open", "arguments": {"path": guestpath, "mode": "rb"}}, timeout=300)
     total = 0
@@ -246,20 +249,24 @@ def guest_get(guestpath, local, chunk=3500 * 1024, auto_compress=True):
     sys.stderr.write(f"read {total} bytes -> {local} ({mb}MB)\n")
     sys.stderr.flush()
 
-    # Auto-decompress if we compressed
-    if local.endswith('.gz'):
+    # Auto-decompress if we compressed on guest
+    if compressed_on_guest and local.endswith('.gz'):
         import gzip
+        import os
         sys.stderr.write(f"Decompressing {local}...\n")
         sys.stderr.flush()
         local_uncompressed = local[:-3]
-        with gzip.open(local, 'rb') as f_in:
-            with open(local_uncompressed, 'wb') as f_out:
-                f_out.write(f_in.read())
-        import os
-        os.remove(local)
-        local = local_uncompressed
-        sys.stderr.write(f"✓ Decompressed to {local}\n")
-        sys.stderr.flush()
+        try:
+            with gzip.open(local, 'rb') as f_in:
+                with open(local_uncompressed, 'wb') as f_out:
+                    f_out.write(f_in.read())
+            os.remove(local)
+            local = local_uncompressed
+            sys.stderr.write(f"✓ Decompressed to {local}\n")
+            sys.stderr.flush()
+        except Exception as e:
+            sys.stderr.write(f"⚠ Decompression failed: {e}\n")
+            sys.stderr.flush()
 
     return total
 
