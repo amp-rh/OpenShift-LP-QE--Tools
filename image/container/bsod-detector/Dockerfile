@@ -27,7 +27,7 @@ microdnf install -y \
     python3 \
     python3-pip \
     jq
-pip3 install --no-cache-dir python-evtx
+pip3 install --no-cache-dir python-evtx==0.8.1
 microdnf clean all
 run-EOF
 
