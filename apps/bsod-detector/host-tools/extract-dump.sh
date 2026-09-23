@@ -84,6 +84,11 @@ typeset -a found=()
 # virt-copy-out reads read-only by default.
 # copy_out — copy a file from the guest disk image to the output directory.
 #   Returns: 0 = success, 1 = not found (expected), 2 = copy failed (unexpected).
+#
+# TODO(perf): Each call boots a libguestfs appliance (virt-ls + virt-copy-out
+#   = 2 boots per file). For 5 default calls that is ~10 appliance boots.
+#   Refactor to a single guestfish session that handles all file operations
+#   in one appliance lifetime.
 copy_out () {
   typeset src="${winRoot}/$1"
   typeset dst="$2"
