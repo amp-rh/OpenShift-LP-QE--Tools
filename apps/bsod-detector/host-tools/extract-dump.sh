@@ -54,7 +54,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "${disk}" ]] || { warn "--disk is required"; exit 2; }
+[[ -n "${disk:-}" ]] || { warn "--disk image not specified"; exit 1; }
+[[ -n "${out:-}" ]] || { warn "--out directory not specified"; exit 1; }
 [[ -f "${disk}" ]] || { warn "disk not found: ${disk}"; exit 2; }
 mkdir -p "${out}"
 
