@@ -13,13 +13,17 @@ IMAGE_FULL = $(IMAGE_REGISTRY)/$(IMAGE_NAMESPACE)/$(IMAGE_NAME):$(IMAGE_TAG)
 
 APP_DIR = apps/bsod-detector
 
-# Validate required variables before using them
+# Pre-flight validation: variable non-empty checks guard against CI overrides
+# that set IMAGE_* to blank. The file-existence checks catch build-context
+# misconfiguration before the slower podman-build step.
 validate:
 	@{ \
 	    [ -n '$(IMAGE_REGISTRY)' ] || { echo 'ERROR: IMAGE_REGISTRY is empty' >&2; exit 1; }; \
 	    [ -n '$(IMAGE_NAMESPACE)' ] || { echo 'ERROR: IMAGE_NAMESPACE is empty' >&2; exit 1; }; \
 	    [ -n '$(IMAGE_NAME)' ] || { echo 'ERROR: IMAGE_NAME is empty' >&2; exit 1; }; \
 	    [ -n '$(IMAGE_TAG)' ] || { echo 'ERROR: IMAGE_TAG is empty' >&2; exit 1; }; \
+	    [ -f Dockerfile ] || { echo 'ERROR: Dockerfile not found in current directory' >&2; exit 1; }; \
+	    [ -d '../../../$(APP_DIR)/host-tools' ] || { echo 'ERROR: host-tools dir not found at ../../../$(APP_DIR)/host-tools' >&2; exit 1; }; \
 	    echo 'Validation passed. IMAGE_FULL=$(IMAGE_FULL)'; \
 	}
 
