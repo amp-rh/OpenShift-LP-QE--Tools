@@ -556,6 +556,60 @@ External Operator               CI Operator                 VM (Guest)
 
 ---
 
+## Resolving Disk Image Paths Dynamically
+
+Instead of hardcoding disk image paths like `/var/lib/libvirt/images/win2022-vm-hjoshi1.qcow2`, you can extract the disk path dynamically from the running VM.
+
+### Why Dynamic Resolution?
+
+✅ Works across different hypervisors (KVM/libvirt and KubeVirt)  
+✅ Supports custom storage paths  
+✅ Makes scripts portable and reusable  
+✅ Doesn't depend on naming conventions  
+
+### How to Extract the Disk Path
+
+**For KubeVirt VMs**, query virsh inside the virt-launcher pod:
+
+```bash
+# Variables
+VM="win2022-vm-hjoshi1"
+NS="windows-bsod"
+DOM_NAME="${NS}_${VM}"
+
+# 1. Find the virt-launcher pod
+POD=$(oc get pod -n "$NS" -o name | grep "virt-launcher-${VM}" | head -1 | cut -d/ -f2)
+
+# 2. Extract disk path using virsh domblklist
+DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "$DOM_NAME" | grep vda | awk '{print $2}')
+
+# 3. Use the resolved path
+./host-tools/run.sh --disk "$DISK_IMAGE" --out ./evidence/dumps
+```
+
+**What each step does:**
+
+1. **Find the pod:** Queries KubeVirt for the virt-launcher pod managing your VM
+2. **Extract disk:** Uses `virsh domblklist` to list block devices (returns path like `/var/lib/libvirt/images/...qcow2`)
+3. **Use path:** Pass to `host-tools/run.sh` for offline evidence extraction
+
+### In Your Test Script
+
+The complete test script (`bsod-detector-test.sh`) automatically does this:
+
+```bash
+# Step 0: Resolve VM configuration
+POD=$(oc get pod -n "$NS" -o name | grep "virt-launcher-${VM}" | head -1 | cut -d/ -f2)
+DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vda | awk '{print $2}')
+
+# Step 3: Use resolved path for evidence extraction
+./host-tools/run.sh --disk "$DISK_IMAGE" --out ./evidence/dumps
+```
+
+This eliminates manual disk path lookups and makes the script work on any VM in any namespace.
+
+---
+
 ## Test Scenarios
 
 The toolkit supports **3 ways to trigger and capture a BSOD**:
