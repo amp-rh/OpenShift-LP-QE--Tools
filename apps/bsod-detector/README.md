@@ -412,6 +412,39 @@ DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vd
   --out ./evidence/dumps
 ```
 
+### Performance Considerations: guest-agent.py Slowness
+
+**⚠️ Known Issue:** `guest-agent.py psfile` and `guest-agent.py exec` commands can be **very slow** (30-120+ seconds per command) due to:
+
+1. **qemu-guest-agent overhead** — RPC communication through libvirt/KVM
+2. **PowerShell startup time** — Even simple scripts take time to load
+3. **Network latency** — oc exec → virt-launcher pod → virsh adds layers
+4. **Guest system load** — Heavy I/O or high CPU makes responses slower
+
+**Recommended Timeout Values:**
+- `psfile <script>` — **120 seconds** (setup scripts can be slow)
+- `exec <command>` — **60 seconds** (simpler commands are faster)
+- Large file transfers (`put`, `get`) — **180+ seconds** (I/O bound)
+
+**Optimization Tips:**
+- ✅ Batch commands where possible (one large script vs. multiple small ones)
+- ✅ Check `GA_VM=$VM GA_NS=$NS python3 ... ping` first (should return immediately)
+- ✅ If `ping` hangs, the guest-agent is unresponsive — restart the VM
+- ✅ For production, pre-stage setup scripts (stage-toolkit, configure-dumps) once during VM creation
+- ✅ Use `host-tools/run.sh` for evidence extraction instead of guest-side collection (offline is faster)
+
+**Debugging:**
+```bash
+# Check if guest-agent is reachable
+GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py ping
+# Expected: Returns immediately (empty output {})
+# If it hangs: guest-agent is unresponsive
+
+# Test with a simple command (60s timeout)
+timeout 60 bash -c 'GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py exec powershell -NoProfile -Command "Write-Host done"'
+# If this times out: guest may be under high load or unresponsive
+```
+
 ---
 
 ## Integration: Detecting Externally-Triggered BSOD
