@@ -231,7 +231,10 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py exec \
 # This is NORMAL and EXPECTED
 
 # 5. Collect: Extract dumps offline
-./host-tools/run.sh --disk /var/lib/libvirt/images/win2022-vm-hjoshi1.qcow2 \
+# Resolve disk image dynamically first (see "Resolving Disk Image Paths Dynamically" section)
+POD=$(oc get pod -n "$NS" -o name | grep "virt-launcher-${VM}" | head -1 | cut -d/ -f2)
+DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vda | awk '{print $2}')
+./host-tools/run.sh --disk "$DISK_IMAGE" \
   --out ./evidence/dumps
 # Expected output: MEMORY.DMP extracted, minidumps extracted, JSON result
 
@@ -402,7 +405,10 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
 
 # AFTER CRASH
 # 5. Extract evidence (guest is now offline/crashed)
-./host-tools/run.sh --disk /var/lib/libvirt/images/win2022-vm-hjoshi1.qcow2 \
+# Resolve disk image dynamically first (see "Resolving Disk Image Paths Dynamically" section)
+POD=$(oc get pod -n "$NS" -o name | grep "virt-launcher-${VM}" | head -1 | cut -d/ -f2)
+DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vda | awk '{print $2}')
+./host-tools/run.sh --disk "$DISK_IMAGE" \
   --out ./evidence/dumps
 ```
 
@@ -648,8 +654,10 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py exec \
 # Expected: TIMEOUT (guest has crashed, this is expected)
 
 # 6. Extract evidence offline (guest is now stopped)
-DISK_IMAGE=/var/lib/libvirt/images/win2022-vm-hjoshi1.qcow2
-./host-tools/run.sh --disk $DISK_IMAGE --out ./evidence/dumps
+# IMPORTANT: Use dynamic disk path resolution (see section above)
+POD=$(oc get pod -n "$NS" -o name | grep "virt-launcher-${VM}" | head -1 | cut -d/ -f2)
+DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vda | awk '{print $2}')
+./host-tools/run.sh --disk "$DISK_IMAGE" --out ./evidence/dumps
 # Expected: MEMORY.DMP extracted, minidumps extracted, JSON result
 ```
 
@@ -737,11 +745,15 @@ See **[docs/natural-bsod-workflow.md](docs/natural-bsod-workflow.md)** for detai
 
 **CI Operator runs:**
 ```bash
-export DISK_IMAGE=/var/lib/libvirt/images/win2022-vm-hjoshi1.qcow2
+# IMPORTANT: Resolve disk image dynamically (see section above)
+VM="win2022-vm-hjoshi1"
+NS="windows-bsod"
+POD=$(oc get pod -n "$NS" -o name | grep "virt-launcher-${VM}" | head -1 | cut -d/ -f2)
+DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vda | awk '{print $2}')
 
 # Method 1: Direct extraction via host-tools
 ./host-tools/run.sh \
-  --disk $DISK_IMAGE \
+  --disk "$DISK_IMAGE" \
   --out ./evidence/dumps
 # Expected: MEMORY.DMP extracted, minidumps extracted, JSON result
 
@@ -811,7 +823,9 @@ export VM_NAME=bsod-test
 export LIBVIRT_DEFAULT_URI=qemu:///system
 
 src/scripts/host/guest-ssh.sh -c '<PowerShell command>'
-./host-tools/run.sh --disk /var/lib/libvirt/images/<vm>.qcow2 --out ./output
+# For disk path, use: virsh domblklist <vm> | grep vda | awk '{print $2}'
+# or the dynamic resolution pattern (see "Resolving Disk Image Paths Dynamically" section)
+./host-tools/run.sh --disk <resolved-disk-image> --out ./output
 ```
 
 **Transport:** SSH to Windows guest or `virsh` on the host
@@ -829,7 +843,9 @@ src/scripts/host/guest-ssh.sh -c 'C:\Temp\nmf\notmyfaultc64.exe /accepteula /cra
   --provider kvm --vm $VM_NAME --out ./evidence
 
 # Or extract from offline image directly
-./host-tools/run.sh --disk /var/lib/libvirt/images/bsod-test.qcow2 --out ./output
+# Resolve disk path: virsh domblklist $VM_NAME | grep vda | awk '{print $2}'
+DISK_IMAGE=$(virsh domblklist $VM_NAME | grep vda | awk '{print $2}')
+./host-tools/run.sh --disk "$DISK_IMAGE" --out ./output
 ```
 
 ---
