@@ -109,44 +109,85 @@ This section shows **exactly which commands run on each layer** during a complet
 ### Complete Test Sequence: Intentional Crash Injection
 
 ```
-CI Operator (Your Laptop)
-    ↓ runs: GA_VM=... GA_NS=... python3 src/scripts/host/guest-agent.py psfile setup-notmyfault.ps1
-    ↓
-Virt-Launcher Pod
-    ↓ forwards to: virsh qemu-agent-command <domain> '<qmp-exec>' (inside pod)
-    ↓
-Windows VM (Guest)
-    ↓ executes: setup-notmyfault.ps1 (via guest-agent)
-    ↓ downloads: NotMyFault.exe → C:\Temp\nmf\
-    ↓
-    ← returns: Setup complete, notmyfaultc64.exe present
-    ↓
-CI Operator triggers crash
-    ↓ runs: GA_VM=... GA_NS=... python3 src/scripts/host/guest-agent.py exec \
-            powershell -Command 'C:\Temp\nmf\notmyfaultc64.exe /accepteula /crash 0x01'
-    ↓
-Virt-Launcher Pod
-    ↓ forwards to: virsh qemu-agent-command <domain> '<qmp-exec>' (inside pod)
-    ↓
-Windows VM (Guest)
-    ↓ executes: NotMyFault.exe /crash 0x01
-    ↓ bugcheck: Windows BSOD with code 0x01
-    ↓ dump: Writes MEMORY.DMP to C:\Windows\
-    ↓ (Guest becomes unresponsive)
-    ↓
-Virt-Launcher Pod
-    ↓ detects: Guest agent no longer responding
-    ↓ auto-stops VM (via watch-crash.sh or manual)
-    ↓
-CI Operator extracts evidence
-    ↓ runs: ./host-tools/run.sh --disk <qcow2> --out ./evidence/dumps
-    ↓ (libguestfs container mounts disk read-only)
-    ↓
-Disk Image (Offline)
-    ↓ virt-copy-out extracts: MEMORY.DMP, Minidump/*.dmp, System.evtx, Application.evtx
-    ↓
-CI Operator collects results
-    ↓ results in: ./evidence/ directory
+╔════════════════════════════════════════════════════════════════════════════╗
+║                         INTENTIONAL CRASH INJECTION FLOW                   ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+PHASE 1: SETUP (One-Time)
+─────────────────────────────────────────────────────────────────────────────
+┌─────────────────────────────┐
+│ CI Operator (Orchestration)  │
+│  - Stage toolkit            │
+│  - Configure dumps          │
+│  - Setup NotMyFault injector│
+└──────────────┬──────────────┘
+               │ guest-agent.py psfile
+               ↓
+┌──────────────────────────────┐
+│ Virt-Launcher Pod            │
+│  - Forward via qemu-agent    │
+└──────────────┬───────────────┘
+               │ virsh qemu-agent-command
+               ↓
+┌──────────────────────────────┐
+│ Windows VM (Guest)           │
+│  [Setup Scripts Execute]     │
+│  - Directories created       │
+│  - Registry configured       │
+│  - NotMyFault.exe installed  │
+└──────────────────────────────┘
+
+PHASE 2: CRASH TRIGGER (Per-Test)
+─────────────────────────────────────────────────────────────────────────────
+┌─────────────────────────────┐
+│ CI Operator                  │
+│  - Clear old dumps (optional)│
+│  - Execute crash command     │
+└──────────────┬──────────────┘
+               │ guest-agent.py exec
+               ↓
+┌──────────────────────────────┐
+│ Virt-Launcher Pod            │
+│  - Forward crash trigger     │
+└──────────────┬───────────────┘
+               │ virsh qemu-agent-command
+               ↓
+┌──────────────────────────────┐
+│ Windows VM (Guest)           │
+│  [CRASH OCCURS]              │
+│  notmyfaultc64.exe /crash    │
+│  ↓ BSOD triggered (0x01)     │
+│  ↓ MEMORY.DMP written        │
+│  ↓ Agent unresponsive        │
+└──────────────────────────────┘
+
+PHASE 3: EVIDENCE COLLECTION (Offline)
+─────────────────────────────────────────────────────────────────────────────
+┌─────────────────────────────┐
+│ CI Operator                  │
+│  - Run host-tools extraction │
+└──────────────┬──────────────┘
+               │ libguestfs container
+               ↓
+┌──────────────────────────────┐
+│ Disk Image (Offline Mount)   │
+│  [Read-Only NTFS Access]     │
+│  - Extract MEMORY.DMP        │
+│  - Extract Minidump/*.dmp    │
+│  - Extract System.evtx       │
+│  - Extract Application.evtx  │
+└──────────────┬───────────────┘
+               │
+               ↓
+┌──────────────────────────────┐
+│ Evidence Directory           │
+│  ./evidence/                 │
+│  ├── MEMORY.DMP              │
+│  ├── Minidump/               │
+│  ├── winevt/System.evtx      │
+│  ├── winevt/Application.evtx │
+│  └── evidence-summary.json   │
+└──────────────────────────────┘
 ```
 
 ---
@@ -432,31 +473,51 @@ cat ./evidence/evidence-summary.json | jq .verdict
 ### Execution Flow
 
 ```
-External Test Operator             CI Operator              VM (Guest)
-         │                                │                       │
-         │ Prepares BSOD trigger         │                       │
-         │                        ↓      │                       │
-         │ (notifies ready)  ←────────→ watch-crash.sh ◀─ polls guest agent
-         │                               │                       │
-         │ Triggers BSOD              (watching, waiting)        │
-         │ (external mechanism)         │                       │
-         └──────────────────────────→  │                       │
-                                        │                       ↓
-                                        │                    Guest crashes
-                                        │                    Writes MEMORY.DMP
-                                        │                    to C:\Windows\
-                                        │                       │
-         │                              ← detects crash ──────→ Agent unresponsive
-         │                              │                       │
-         │ (notifies done)              │ watch-crash escalates:
-         └──────────────────→           │ 1. Screenshots
-                                        │ 2. Captures memory
-                                        │ 3. Stops VM
-                                        │ 4. Extracts dumps (offline)
-                                        │
-                                        ↓
-                                   ./evidence/ populated
-                                   ✅ Analysis ready
+╔════════════════════════════════════════════════════════════════════════════╗
+║                    EXTERNAL BSOD DETECTION & CAPTURE                       ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+External Operator               CI Operator                 VM (Guest)
+     ┌─────────────┐            ┌─────────────┐          ┌──────────────┐
+     │  PREPARE    │            │   SETUP     │          │   WAITING    │
+     │ (Notify)    │────────→   │ configure   │   ┌─────→│    Ready     │
+     │             │            │ dumps.ps1   │   │      │              │
+     └─────────────┘            └─────────────┘   │      └──────────────┘
+                                                   │
+                                 ┌─────────────┐  │
+                                 │  WATCH      │──┘
+                                 │ watch-crash │
+                                 │  (blocking)  │
+                                 └──────┬──────┘
+                                        │ polls
+                                        │ guest-agent every 5s
+                                        ├──────────────────→
+
+     ┌──────────┐                                          ┌──────────────┐
+     │ TRIGGER  │──→ (external mechanism) ──→ [Crash!] ──→│  BSOD        │
+     │  BSOD    │                                         │ Writes MEMORY │
+     └──────────┘                                         │ Agent DOWN    │
+                                                          └──────┬───────┘
+                                 ┌──────────────┐                │
+                                 │ DETECTS ✅   │← ─ ─ ─ ─ ─ ─ ┘
+                                 │ Unresponsive │
+                                 └───────┬──────┘
+                                        ┌┴──────────────────────┐
+                                        │  ESCALATE:             │
+                                        │  1. Screenshot         │
+                                        │  2. Memory capture     │
+                                        │  3. Stop VM            │
+                                        │  4. Extract offline    │
+                                        └───────┬────────────────┘
+                                                ↓
+                                    ┌──────────────────┐
+                                    │ ./evidence/      │
+     ┌──────────┐                  │  ├─ MEMORY.DMP   │
+     │ NOTIFIED │←─────────────────│  ├─ Minidumps    │
+     │  Done    │                  │  ├─ Event logs   │
+     └──────────┘                  │  └─ JSON summary │
+                                    └──────────────────┘
+                                         ✅ Analysis Ready
 ```
 
 ### Coordination Checklist
