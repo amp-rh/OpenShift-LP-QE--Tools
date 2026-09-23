@@ -181,4 +181,4 @@ warnJson="$(printf '%s\n' ${warns[@]+"${warns[@]}"} | jq -Rn '[inputs | select(l
 
 if [[ "${#found[@]}" -eq 0 ]]; then emit false; exit 1; fi
 emit true
-true
+exit 0
