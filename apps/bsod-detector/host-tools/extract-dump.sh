@@ -19,6 +19,13 @@
 #   extract-dump --disk /images/bsod-test.qcow2 --out /out
 #   extract-dump --disk /images/bsod-test.qcow2 --out /out --windows-root /Windows
 #
+# Container mount contract (when run via run.sh):
+#   /images/<basename>  — disk image (read-only bind mount)
+#   /out                — output directory (read-write bind mount)
+#
+# Default values match these mount points. Override with --disk and --out
+# when running outside the container.
+#
 # Output (stdout JSON):
 #   { "ok": true, "disk": "...", "outputDir": "/out",
 #     "dumpFiles": ["MEMORY.DMP","Minidump/..."], "warnings": [ ... ] }
