@@ -13,8 +13,9 @@
 #   - python3          : dump-header parsing helpers
 #   - python-evtx      : offline Windows .evtx event log parsing
 #
-# Build:  podman build -t bsod-host-tools host-tools/
-# Run:    use host-tools/run.sh (wires up the right mounts).
+# Build:  cd image/container/bsod-detector && podman build -t bsod-detector -f Dockerfile ../../../apps/bsod-detector
+# Run:    use apps/bsod-detector/host-tools/run.sh (wires up the right mounts).
+#         Or: make -C image/container/bsod-detector build
 FROM registry.fedoraproject.org/fedora-minimal:41
 
 # libguestfs needs an appliance; the package pulls a prebuilt one on Fedora.
