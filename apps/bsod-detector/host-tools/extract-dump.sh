@@ -37,9 +37,9 @@ typeset disk=''
 typeset out='/out'
 typeset winRoot='/Windows'
 # warn — print a diagnostic message to stderr.
-function warn () { echo "extract-dump: $*" >&2; true; }
+warn () { echo "extract-dump: $*" >&2; true; }
 # emit — write the final JSON result object to stdout.
-function emit () {
+emit () {
   printf '{"ok":%s,"disk":%s,"outputDir":%s,"dumpFiles":%s,"warnings":%s}\n' \
     "$1" "$(jq -Rn --arg v "${disk}" '$v')" "$(jq -Rn --arg v "${out}" '$v')" \
     "${filesJson:-[]}" "${warnJson:-[]}"
@@ -79,7 +79,7 @@ typeset -a found=()
 # virt-copy-out reads read-only by default.
 # copy_out — copy a file from the guest disk image to the output directory.
 #   Returns: 0 = success, 1 = not found (expected), 2 = copy failed (unexpected).
-function copy_out () {
+copy_out () {
   typeset src="${winRoot}/$1"
   typeset dst="$2"
   typeset rc=0
