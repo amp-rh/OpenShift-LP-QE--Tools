@@ -3,13 +3,13 @@
 load test-helper
 
 setup() {
-  SetupTemp
+  setup_temp
   CAPTURE_SCRIPT="$REPO_ROOT/src/scripts/host/capture-vm-screen.sh"
   COLLECT_ALL="$REPO_ROOT/src/scripts/host/collect-all.sh"
 }
 
 teardown() {
-  TeardownTemp
+  teardown_temp
 }
 
 # --- capture-vm-screen.sh tests ---

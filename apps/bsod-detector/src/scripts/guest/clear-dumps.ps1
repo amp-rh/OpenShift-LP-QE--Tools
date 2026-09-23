@@ -12,10 +12,31 @@
 
     Runs on: the GUEST VM. Requires elevation.
 #>
-. "$PSScriptRoot\..\lib\Common.ps1"
-# Common.ps1 sets ErrorActionPreference=Stop; we want removals of absent dumps to
-# stay quiet, so relax it here (after dot-sourcing) and guard each removal.
-$ErrorActionPreference='SilentlyContinue'
+# Standalone helpers (no Common.ps1 dependency).
+$ErrorActionPreference = 'SilentlyContinue'
+
+function Get-DumpPaths {
+    <# .SYNOPSIS Resolve where this Windows guest writes crash dumps. #>
+    $ccPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
+    $cc = Get-ItemProperty -Path $ccPath -ErrorAction SilentlyContinue
+    function Read-CcValue { param([string]$Name)
+        if ($cc -and ($cc.PSObject.Properties.Name -contains $Name)) {
+            $v = $cc.$Name
+            if ($v -is [string] -and $v.Trim()) { return [Environment]::ExpandEnvironmentVariables($v) }
+        }
+        return $null
+    }
+    $dumpFile = Read-CcValue 'DumpFile'
+    if (-not $dumpFile) { $dumpFile = Join-Path $env:SystemRoot 'MEMORY.DMP' }
+    $miniDir = Read-CcValue 'MinidumpDir'
+    if (-not $miniDir) { $miniDir = Join-Path $env:SystemRoot 'Minidump' }
+    [pscustomobject]@{
+        DumpFile          = $dumpFile
+        MinidumpDir       = $miniDir
+        DedicatedDumpFile = Read-CcValue 'DedicatedDumpFile'
+    }
+}
+
 $paths   = Get-DumpPaths
 $miniDir = $paths.MinidumpDir
 Remove-Item (Join-Path $miniDir '*.dmp') -Force -ErrorAction SilentlyContinue

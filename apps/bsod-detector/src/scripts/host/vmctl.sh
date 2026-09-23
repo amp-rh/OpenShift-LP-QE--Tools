@@ -8,7 +8,7 @@
 # model: revert -> trigger BSOD -> collect -> revert. No per-experiment VM clones.
 #
 # Usage:
-#   vmctl.sh define        # (re)define the domain from src/scripts/host/bsod-test.domain.xml
+#   vmctl.sh define        # (re)define the domain from src/scripts/bsod-test.domain.xml
 #   vmctl.sh snapshot      # create/refresh the 'clean-baseline' snapshot
 #   vmctl.sh revert        # revert to 'clean-baseline' (discard crash state)
 #   vmctl.sh start|stop|kill|console|status|list
@@ -23,16 +23,18 @@ typeset snapName="${SNAP_NAME:-clean-baseline}"
 typeset here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 typeset xml="${here}/bsod-test.domain.xml"
 
-function Die () { echo "vmctl: $*" >&2; exit 1; }
-function Have () { command -v "$1" >/dev/null 2>&1; }
+# die — print a fatal error to stderr and exit.
+function die () { echo "vmctl: $*" >&2; exit 1; }
+# have — return 0 if the named command is available on PATH.
+function have () { command -v "$1" >/dev/null 2>&1; }
 
-Have virsh || Die "virsh not found; install libvirt-client"
+have virsh || die "virsh not found; install libvirt-client"
 
 typeset cmd="${1:-status}"; shift || true
 
 case "${cmd}" in
   define)
-    [[ -f "${xml}" ]] || Die "missing ${xml}"
+    [[ -f "${xml}" ]] || die "missing ${xml}"
     virsh define "${xml}"
     : "defined ${vmName} from ${xml}"
     ;;
@@ -54,7 +56,7 @@ case "${cmd}" in
   list)    virsh list --all ;;
   ip)      virsh domifaddr "${vmName}" --source agent 2>/dev/null \
              || virsh domifaddr "${vmName}" 2>/dev/null \
-             || Die "no IP (guest agent not responding?)" ;;
-  *) Die "unknown command: ${cmd} (see header for usage)" ;;
+             || die "no IP (guest agent not responding?)" ;;
+  *) die "unknown command: ${cmd} (see header for usage)" ;;
 esac
 true

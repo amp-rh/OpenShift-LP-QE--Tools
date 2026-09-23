@@ -38,7 +38,12 @@ CONFIG (all optional -- the target is auto-resolved from the cluster)
     Nothing is hardcoded to a particular VM: with a single VMI you can run with no
     env vars at all; otherwise set GA_VM (and GA_NS if it is ambiguous).
 """
-import base64, json, os, subprocess, sys, time
+import base64
+import json
+import os
+import subprocess
+import sys
+import time
 
 NS  = os.environ.get("GA_NS")
 VM  = os.environ.get("GA_VM")
@@ -50,14 +55,14 @@ _resolved = False
 
 def _oc(args):
     """Run `oc <args>` and return stripped stdout, or '' on failure."""
-    r = subprocess.run(["oc"] + args, capture_output=True, text=True)
+    r = subprocess.run(["oc"] + args, capture_output=True, text=True, check=False)
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
 def _resolve_pod(ns, vm):
     for line in _oc(["get", "pod", "-n", ns, "-o", "name"]).splitlines():
         name = line.split("/", 1)[-1]
-        if name.startswith("virt-launcher-{}-".format(vm)):
+        if name.startswith(f"virt-launcher-{vm}-"):
             return name
     return ""
 
@@ -89,11 +94,11 @@ def resolve_target():
     if not NS:
         sys.exit("guest-agent: namespace unknown; set GA_NS (or GA_DOM=<ns>_<vm>)")
     if not DOM:
-        DOM = "{}_{}".format(NS, VM)
+        DOM = f"{NS}_{VM}"
     if not POD:
         POD = _resolve_pod(NS, VM)
         if not POD:
-            sys.exit("guest-agent: no running virt-launcher pod for VM '{}' in ns '{}'".format(VM, NS))
+            sys.exit(f"guest-agent: no running virt-launcher pod for VM '{VM}' in ns '{NS}'")
     _resolved = True
 
 
@@ -104,7 +109,7 @@ def agent(cmd_obj, timeout=60):
     out = subprocess.run(
         ["oc", "exec", "-n", NS, POD, "--",
          "virsh", "qemu-agent-command", "--timeout", str(timeout), DOM, payload],
-        capture_output=True, text=True)
+        capture_output=True, text=True, check=False)
     if out.returncode != 0:
         raise RuntimeError(f"virsh failed: {out.stderr.strip() or out.stdout.strip()}")
     return json.loads(out.stdout)["return"]
@@ -131,7 +136,8 @@ def guest_exec(path, args=None, wait=True, poll_timeout=180):
 
 def guest_put(local, guestpath):
     """Upload a local file to the guest via guest-file-write (256KB base64 chunks)."""
-    data = open(local, "rb").read()
+    with open(local, "rb") as fh:
+        data = fh.read()
     handle = agent({"execute": "guest-file-open",
                     "arguments": {"path": guestpath, "mode": "wb"}})
     try:
@@ -161,7 +167,7 @@ def guest_get(guestpath, local, chunk=1024 * 1024):
                     r = agent({"execute": "guest-file-read",
                                "arguments": {"handle": handle, "count": chunk}})
                     break
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001  # retry any transient agent error
                     last = e; time.sleep(1.5)
             else:
                 raise RuntimeError(f"chunk at offset {offset} failed after retries: {last}")

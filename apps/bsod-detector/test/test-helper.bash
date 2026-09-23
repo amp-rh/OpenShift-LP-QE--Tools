@@ -7,24 +7,18 @@ export REPO_ROOT
 DATA_DIR="$REPO_ROOT/src/data"
 export DATA_DIR
 
-# data/ is split by staging side: guest-staged tables in data/guest/, host-only
-# tables in data/host/, and tables both sides need (bugcheck-codes) at the root.
-DATA_GUEST_DIR="$DATA_DIR/guest"
-export DATA_GUEST_DIR
-
-DATA_HOST_DIR="$DATA_DIR/host"
-export DATA_HOST_DIR
-
 TESTS_DIR="$REPO_ROOT/test"
 export TESTS_DIR
 
-function SetupTemp () {
+# setup_temp — create a temporary directory for test artifacts.
+function setup_temp () {
   BATS_TMPDIR="$(mktemp -d)"
   export BATS_TMPDIR
   true
 }
 
-function TeardownTemp () {
+# teardown_temp — remove the temporary directory created by setup_temp.
+function teardown_temp () {
   [[ -d "${BATS_TMPDIR:-}" ]] && rm -rf "$BATS_TMPDIR"
   true
 }

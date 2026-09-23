@@ -13,8 +13,4 @@ output/
 .ssh/
 
 # Override root .gitignore *.xml exclusion for the libvirt domain definition
-!src/scripts/host/bsod-test.domain.xml
-
-# Python bytecode
-__pycache__/
-*.pyc
+!vm/bsod-test.domain.xml
