@@ -114,8 +114,21 @@ fi
 # Minidump directory (small dumps, one per crash)
 typeset f=''
 if virt-ls -a "${disk}" "${winRoot}/Minidump" >/dev/null 2>&1; then
-  virt-copy-out -a "${disk}" "${winRoot}/Minidump" "${out}" 2>>/tmp/err || true
-  while IFS= read -r f; do found+=("Minidump/${f}"); done < <(virt-ls -a "${disk}" "${winRoot}/Minidump" 2>/dev/null | sed -n '/\.dmp$/Ip')
+  copy_rc=0
+  virt-copy-out -a "${disk}" "${winRoot}/Minidump" "${out}" 2>/tmp/err || copy_rc=$?
+  if [[ ${copy_rc} -eq 0 ]]; then
+    while IFS= read -r f; do
+      if [[ -f "${out}/Minidump/${f}" ]]; then
+        found+=("Minidump/${f}")
+      else
+        warns+=("Minidump/${f} listed but not copied")
+      fi
+    done < <(virt-ls -a "${disk}" "${winRoot}/Minidump" 2>/dev/null | sed -n '/\.dmp$/Ip')
+  else
+    typeset err_content=""
+    [[ -s /tmp/err ]] && err_content=$(</tmp/err)
+    warns+=("Minidump copy failed (rc=${copy_rc}): ${err_content}")
+  fi
 else
   warns+=("no Minidump directory found")
 fi
