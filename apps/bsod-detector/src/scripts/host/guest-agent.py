@@ -102,36 +102,54 @@ def resolve_target():
     _resolved = True
 
 
-def agent(cmd_obj, timeout=60):
+def agent(cmd_obj, timeout=300):
     """Send one qemu-agent-command and return its 'return' payload."""
     resolve_target()
     payload = json.dumps(cmd_obj)
-    out = subprocess.run(
-        ["oc", "exec", "-n", NS, POD, "--",
-         "virsh", "qemu-agent-command", "--timeout", str(timeout), DOM, payload],
-        capture_output=True, text=True, check=False)
+    try:
+        out = subprocess.run(
+            ["oc", "exec", "-n", NS, POD, "--",
+             "virsh", "qemu-agent-command", "--timeout", str(timeout), DOM, payload],
+            capture_output=True, text=True, check=False, timeout=timeout+30)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"oc exec timed out after {timeout+30}s: {e}")
+    except Exception as e:
+        raise RuntimeError(f"oc exec failed: {e}")
+
     if out.returncode != 0:
-        raise RuntimeError(f"virsh failed: {out.stderr.strip() or out.stdout.strip()}")
-    return json.loads(out.stdout)["return"]
+        err_msg = out.stderr.strip() or out.stdout.strip() or "unknown error"
+        raise RuntimeError(f"virsh failed (timeout={timeout}): {err_msg}")
+    try:
+        return json.loads(out.stdout)["return"]
+    except (json.JSONDecodeError, KeyError) as e:
+        raise RuntimeError(f"invalid response from virsh: {out.stdout}: {e}")
 
 
-def guest_exec(path, args=None, wait=True, poll_timeout=180):
+def guest_exec(path, args=None, wait=True, poll_timeout=600):
     """Run a program in the guest. wait=False returns immediately (use when the
     command is expected to crash the guest, e.g. a BSOD trigger)."""
     r = agent({"execute": "guest-exec", "arguments": {
-        "path": path, "arg": args or [], "capture-output": True}})
+        "path": path, "arg": args or [], "capture-output": True}}, timeout=300)
     pid = r["pid"]
     if not wait:
         return {"pid": pid}
     deadline = time.time() + poll_timeout
+    poll_interval = 3
     while time.time() < deadline:
-        st = agent({"execute": "guest-exec-status", "arguments": {"pid": pid}})
-        if st.get("exited"):
-            out = base64.b64decode(st["out-data"]).decode("utf-8", "replace") if st.get("out-data") else ""
-            err = base64.b64decode(st["err-data"]).decode("utf-8", "replace") if st.get("err-data") else ""
-            return {"pid": pid, "exitcode": st.get("exitcode"), "stdout": out, "stderr": err}
-        time.sleep(2)
-    return {"pid": pid, "timeout": True}
+        try:
+            st = agent({"execute": "guest-exec-status", "arguments": {"pid": pid}}, timeout=300)
+            if st.get("exited"):
+                out = base64.b64decode(st["out-data"]).decode("utf-8", "replace") if st.get("out-data") else ""
+                err = base64.b64decode(st["err-data"]).decode("utf-8", "replace") if st.get("err-data") else ""
+                return {"pid": pid, "exitcode": st.get("exitcode"), "stdout": out, "stderr": err}
+            time.sleep(poll_interval)
+        except RuntimeError as e:
+            remaining = deadline - time.time()
+            if remaining > 10:
+                time.sleep(poll_interval)
+                continue
+            raise RuntimeError(f"guest-exec timed out waiting for pid {pid}: {e}")
+    return {"pid": pid, "timeout": True, "message": f"waited {poll_timeout}s without exit"}
 
 
 def guest_put(local, guestpath):
@@ -139,36 +157,38 @@ def guest_put(local, guestpath):
     with open(local, "rb") as fh:
         data = fh.read()
     handle = agent({"execute": "guest-file-open",
-                    "arguments": {"path": guestpath, "mode": "wb"}})
+                    "arguments": {"path": guestpath, "mode": "wb"}}, timeout=300)
     try:
         CH = 256 * 1024
         for i in range(0, len(data), CH):
             chunk = base64.b64encode(data[i:i + CH]).decode()
             agent({"execute": "guest-file-write",
-                   "arguments": {"handle": handle, "buf-b64": chunk}})
+                   "arguments": {"handle": handle, "buf-b64": chunk}}, timeout=300)
     finally:
-        agent({"execute": "guest-file-close", "arguments": {"handle": handle}})
+        agent({"execute": "guest-file-close", "arguments": {"handle": handle}}, timeout=300)
     return len(data)
 
 
 def guest_get(guestpath, local, chunk=1024 * 1024):
     """Download a guest file. Seek-based + per-chunk retries so a truncated
     response can be re-read without desyncing the file position."""
-    handle = agent({"execute": "guest-file-open", "arguments": {"path": guestpath, "mode": "rb"}})
+    handle = agent({"execute": "guest-file-open", "arguments": {"path": guestpath, "mode": "rb"}}, timeout=300)
     total = 0
     try:
         offset = 0
         while True:
             last = None
-            for _ in range(5):
+            for retry in range(5):
                 try:
                     agent({"execute": "guest-file-seek",
-                           "arguments": {"handle": handle, "offset": offset, "whence": 0}})
+                           "arguments": {"handle": handle, "offset": offset, "whence": 0}}, timeout=300)
                     r = agent({"execute": "guest-file-read",
-                               "arguments": {"handle": handle, "count": chunk}})
+                               "arguments": {"handle": handle, "count": chunk}}, timeout=300)
                     break
                 except Exception as e:  # noqa: BLE001  # retry any transient agent error
-                    last = e; time.sleep(1.5)
+                    last = e
+                    if retry < 4:
+                        time.sleep(1.5)
             else:
                 raise RuntimeError(f"chunk at offset {offset} failed after retries: {last}")
             b = base64.b64decode(r["buf-b64"]) if r.get("buf-b64") else b""
@@ -179,7 +199,7 @@ def guest_get(guestpath, local, chunk=1024 * 1024):
             if r.get("eof") or not b:
                 break
     finally:
-        agent({"execute": "guest-file-close", "arguments": {"handle": handle}})
+        agent({"execute": "guest-file-close", "arguments": {"handle": handle}}, timeout=300)
     return total
 
 
@@ -204,7 +224,8 @@ def main():
         guestpath = "C:\\Windows\\Temp\\" + local.replace("\\", "/").split("/")[-1]
         n = guest_put(local, guestpath); print(f"[uploaded {n}B -> {guestpath}]")
         r = guest_exec("powershell.exe",
-                       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", guestpath] + sys.argv[3:])
+                       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", guestpath] + sys.argv[3:],
+                       poll_timeout=600)
         print(f"[exit {r.get('exitcode')}]")
         if r.get("stdout"): sys.stdout.write(r["stdout"])
         if r.get("stderr"): sys.stderr.write("STDERR:\n" + r["stderr"])
