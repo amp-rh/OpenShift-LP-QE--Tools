@@ -55,7 +55,7 @@ exec podman run --rm \
   --userns=keep-id \
   "${selinuxOpt[@]}" \
   -v "${disk}":/images/"$(basename "${disk}")":ro \
-  -v "${out}":/out:Z \
+  -v "${out}":/out:z \
   "${image}" \
   -- \
   --disk /images/"$(basename "${disk}")" --out /out
