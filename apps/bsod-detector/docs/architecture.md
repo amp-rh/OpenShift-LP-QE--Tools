@@ -6,21 +6,6 @@ structured JSON. ~5,000 lines. Author: hjoshi · 2026-08-25.
 
 ---
 
-## 0. Email intro (copy-paste, 3 bullets)
-
-> We've built and validated an automatic BSOD crash-investigator for Windows VMs (~5k lines):
->
-> - **Detect → Capture → Analyze**: it detects a blue-screen or freeze, captures a screenshot and
->   the crash dumps, and produces a clear analysis of the cause — all saved as structured JSON reports.
-> - **Proven end-to-end** on a test VM against two different crash types (all stages agreed on the
->   cause; one real bug found and fixed), and the host-side **TLB-flush signal tool is now adapted
->   for OpenShift**.
-> - **Ask:** ready to trial in the **non-production sandbox on Vijay's TLB-flush setup**. Everything
->   needed to catch/capture/analyze is in place; the only open question is how the crash is triggered
->   there — that's the research goal, not a tooling gap.
-
----
-
 ## 1. The big picture
 
 A crashing or frozen Windows VM often **can't report on itself**, so the toolkit is split
