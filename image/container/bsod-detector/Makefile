@@ -1,3 +1,6 @@
+SHELL := /bin/bash
+.SHELLFLAGS := -euo pipefail -c
+
 .PHONY: build push clean help validate
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
@@ -13,7 +16,6 @@ APP_DIR = apps/bsod-detector
 # Validate required variables before using them
 validate:
 	@{ \
-	    set -euo pipefail; shopt -s inherit_errexit; \
 	    [ -n '$(IMAGE_REGISTRY)' ] || { echo 'ERROR: IMAGE_REGISTRY is empty' >&2; exit 1; }; \
 	    [ -n '$(IMAGE_NAMESPACE)' ] || { echo 'ERROR: IMAGE_NAMESPACE is empty' >&2; exit 1; }; \
 	    [ -n '$(IMAGE_NAME)' ] || { echo 'ERROR: IMAGE_NAME is empty' >&2; exit 1; }; \
@@ -24,7 +26,6 @@ validate:
 # Build container image
 build: validate
 	@{ \
-	    set -euo pipefail; shopt -s inherit_errexit; \
 	    echo 'Building container image: $(IMAGE_FULL)'; \
 	    [ -d '../../../$(APP_DIR)' ] || { echo 'ERROR: Build context not found: ../../../$(APP_DIR)' >&2; exit 1; }; \
 	    [ -f Dockerfile ] || { echo 'ERROR: Dockerfile not found in current directory' >&2; exit 1; }; \
@@ -35,7 +36,6 @@ build: validate
 # Build and push to registry
 push: validate build
 	@{ \
-	    set -euo pipefail; shopt -s inherit_errexit; \
 	    echo 'Pushing container image to $(IMAGE_REGISTRY): $(IMAGE_FULL)'; \
 	    podman push '$(IMAGE_FULL)'; \
 	    echo 'Successfully pushed: $(IMAGE_FULL)'; \
@@ -44,7 +44,6 @@ push: validate build
 # Remove local image
 clean:
 	@{ \
-	    set -euo pipefail; shopt -s inherit_errexit; \
 	    echo 'Removing local image: $(IMAGE_FULL)'; \
 	    podman rmi '$(IMAGE_FULL)' || true; \
 	}
