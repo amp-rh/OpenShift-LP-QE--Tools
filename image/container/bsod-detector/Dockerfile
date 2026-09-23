@@ -18,6 +18,8 @@
 #         Or: make -C image/container/bsod-detector build
 FROM registry.fedoraproject.org/fedora-minimal:41
 
+SHELL ["/bin/bash", "-c"]
+
 # libguestfs needs an appliance; the package pulls a prebuilt one on Fedora.
 RUN <<run-EOF
 set -euxo pipefail; shopt -s inherit_errexit
