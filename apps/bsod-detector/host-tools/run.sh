@@ -2,12 +2,14 @@
 # run.sh - run the bsod-host-tools container with the right podman mounts.
 #
 # Usage:
-#   host-tools/run.sh --disk <imgFile> [--out <outDir>]
+#   host-tools/run.sh --disk <imgFile> [--out <outDir>] [--windows-root <winRoot>]
 #
 # Parameters:
-#   --disk <imgFile>   Path to the guest disk image (qcow2) [required]
-#   --out <outDir>     Output directory for recovered dumps
-#                      (default: <project>/output/dumps)
+#   --disk <imgFile>           Path to the guest disk image (qcow2) [required]
+#   --out <outDir>             Output directory for recovered dumps
+#                              (default: <project>/output/dumps)
+#   --windows-root <winRoot>   Windows root path in the disk
+#                              (default: /Windows, forwarded to container)
 #
 # Examples:
 #   host-tools/run.sh --disk /var/lib/libvirt/images/bsod-test.qcow2
@@ -23,11 +25,12 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 typeset project=''
 project="$(cd "${here}/.." && pwd)"
 
-typeset disk=''; typeset out="${project}/output/dumps"
+typeset disk=''; typeset out="${project}/output/dumps"; typeset winRoot=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --disk) disk="$2"; shift 2 ;;
     --out)  out="$2"; shift 2 ;;
+    --windows-root) winRoot="$2"; shift 2 ;;
     -h|--help) sed -n '/^#!/,/^####$/{/^#!/d;/^####$/d;s/^# \{0,1\}//p;}' "$0"; exit 0 ;;
     *) echo "run.sh: unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -51,6 +54,9 @@ if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce)" != "Disabled" ]];
   selinuxOpt=(--security-opt label=disable)
 fi
 
+typeset -a winRootArg=()
+[[ -n "${winRoot}" ]] && winRootArg=(--windows-root "${winRoot}")
+
 exec podman run --rm \
   --userns=keep-id \
   "${selinuxOpt[@]}" \
@@ -58,4 +64,5 @@ exec podman run --rm \
   -v "${out}":/out:z \
   "${image}" \
   -- \
-  --disk /images/"$(basename "${disk}")" --out /out
+  --disk /images/"$(basename "${disk}")" --out /out \
+  ${winRootArg[@]+"${winRootArg[@]}"}
