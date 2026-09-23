@@ -175,9 +175,9 @@ for evtxName in "${evtxTargets[@]}"; do
 done
 
 typeset filesJson=''
-filesJson="$(printf '%s\n' "${found[@]:-}" | jq -Rn '[inputs | select(length > 0)]')"
+filesJson="$(printf '%s\n' ${found[@]+"${found[@]}"} | jq -Rn '[inputs | select(length > 0)]')"
 typeset warnJson=''
-warnJson="$(printf '%s\n' "${warns[@]:-}" | jq -Rn '[inputs | select(length > 0)]')"
+warnJson="$(printf '%s\n' ${warns[@]+"${warns[@]}"} | jq -Rn '[inputs | select(length > 0)]')"
 
 if [[ "${#found[@]}" -eq 0 ]]; then emit false; exit 1; fi
 emit true
