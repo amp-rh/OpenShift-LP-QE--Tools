@@ -29,6 +29,10 @@
 # Output (stdout JSON):
 #   { "ok": true, "disk": "...", "outputDir": "/out",
 #     "dumpFiles": ["MEMORY.DMP","Minidump/..."], "warnings": [ ... ] }
+#
+# Function naming: all functions in this script use lowercase_snake_case
+# (warn, emit, copy_out).  PascalCase locals (e.g. typeset winRoot) are
+# used for variables that map to external path conventions.
 ####
 # Debug: redirect xtrace to FD 5 to keep stdout clean for JSON output
 set -euxo pipefail; shopt -s inherit_errexit
