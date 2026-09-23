@@ -32,12 +32,13 @@ foreach ($dir in $dirs) {
     }
 }
 
-# Verify crash dump directory exists and is writable
-$dumpDir = "C:\Windows"
-if (Test-Path $dumpDir) {
-    Write-Host "Crash dump directory verified: $dumpDir"
+# Verify CrashControl registry key
+$crashControl = "HKLM:\System\CurrentControlSet\Control\CrashControl"
+if (Test-Path $crashControl) {
+    $dumpType = (Get-ItemProperty -Path $crashControl).CrashDumpEnabled
+    Write-Host "CrashControl registry key verified (CrashDumpEnabled=$dumpType)"
 } else {
-    Write-Error "Crash dump directory not found: $dumpDir"
+    Write-Error "CrashControl registry key not found: $crashControl"
 }
 
 # Verify Minidump directory exists

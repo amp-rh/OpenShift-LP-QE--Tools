@@ -14,7 +14,7 @@ collection.
 `virsh` (KVM) or `virtctl`/`oc` (KubeVirt) based on the `BSOD_DET__HYP_PROV`
 environment variable.
 
-## What it captures
+## What It Captures
 
 - Bug-check (stop) code and parameters, resolved via `data/bugcheck-codes.json`
 - Crash dump files (`MEMORY.DMP`, minidumps) extracted offline from the guest disk
@@ -24,6 +24,13 @@ environment variable.
 - BSOD screenshot (framebuffer capture)
 
 Keep it simple. Prefer a small, well-defined tool over a broad framework.
+
+- Bug-check (stop) code and parameters, resolved via `data/bugcheck-codes.json`
+- Crash dump files (`MEMORY.DMP`, minidumps) extracted offline from the guest disk
+- Windows event log entries (System/Application `.evtx`) parsed offline
+- Host-side signals (kernel log split-lock `#AC`, Hyper-V enlightenments)
+- Raw VM memory backup (ELF format, via `virsh dump --memory-only`)
+- BSOD screenshot (framebuffer capture)
 
 ---
 
@@ -201,18 +208,18 @@ PHASE 3: EVIDENCE COLLECTION (Offline)
 
 ### Layer-by-Layer Commands
 
-#### Layer 1: CI Operator (Your Machine)
+#### Layer 1: CI Operator (Operator Workstation)
 
 **What runs:** Bash/Python orchestration scripts
 
-**Location:** Your laptop, CI/CD pipeline, or anywhere with `oc`/SSH access to cluster
+**Location:** The operator workstation, CI/CD pipeline, or anywhere with `oc`/SSH access to cluster
 
-**Commands you execute:**
+**Commands executed at this layer:**
 
 ```bash
-# Set variables
-export VM=win2022-vm-hjoshi1
-export NS=windows-bsod
+# Set these to match the target environment
+export VM="<vm-name>"
+export NS="<namespace>"
 
 # 1. Setup: Stage toolkit on guest
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
@@ -261,38 +268,42 @@ cat ./evidence/dumps/MEMORY.DMP | head -c 100
 **Commands that run indirectly** (invoked by `guest-agent.py` on Layer 1):
 
 ```bash
-# You don't run these directly — guest-agent.py does it for you via oc exec
-# But here's what happens inside the pod:
+# Set these to match the target environment
+VM="<vm-name>"
+NS="<namespace>"
+
+# These are not executed directly by the operator — guest-agent.py handles this via oc exec
+# Here is what happens inside the pod:
 
 # Check VM is running
-virsh -q domifaddr win2022-vm-hjoshi1
+virsh -q domifaddr "$VM"
 # Output: vnet0  52:54:00:12:34:56  ipv4  10.0.0.42/24
 
 # Forward PowerShell command to guest agent
-virsh qemu-agent-command "windows-bsod_win2022-vm-hjoshi1" \
+virsh qemu-agent-command "${NS}_${VM}" \
   '{"execute":"guest-exec","arguments":{"path":"C:\\Windows\\System32\\cmd.exe",...}}'
 # Output: {"return":{"pid":1234}}
 
 # Check guest agent status
-virsh qemu-agent-command "windows-bsod_win2022-vm-hjoshi1" '{"execute":"guest-ping"}'
+virsh qemu-agent-command "${NS}_${VM}" '{"execute":"guest-ping"}'
 # Output: (hangs or timeout if guest has crashed — EXPECTED)
 
 # After crash: Stop the VM
-virsh destroy win2022-vm-hjoshi1
-# Output: Domain win2022-vm-hjoshi1 destroyed
+virsh destroy "$VM"
+# Output: Domain <vm-name> destroyed
 ```
 
 **How to manually run these (for debugging):**
 
 ```bash
 # SSH/exec into the pod
-POD=$(oc get pod -n windows-bsod -o name | grep virt-launcher-win2022-vm-hjoshi1 | head -1 | cut -d/ -f2)
-oc -n windows-bsod exec -it $POD -- bash
+POD=$(oc get pod -n "$NS" -o name | grep "virt-launcher-${VM}" | head -1 | cut -d/ -f2)
+oc -n "$NS" exec -it $POD -- bash
 
-# Inside pod, now you can run virsh directly
-virsh domifaddr win2022-vm-hjoshi1
-virsh qemu-agent-command "windows-bsod_win2022-vm-hjoshi1" '{"execute":"guest-ping"}'
-virsh dumpxml win2022-vm-hjoshi1 | grep disk  # Find disk path
+# Inside pod, virsh commands can be run directly
+virsh domifaddr "$VM"
+virsh qemu-agent-command "${NS}_${VM}" '{"execute":"guest-ping"}'
+virsh dumpxml "$VM" | grep disk  # Find disk path
 ```
 
 ---
@@ -368,8 +379,8 @@ C:\Temp\nmf\notmyfaultc64.exe /accepteula /crash 0x01
 ### Setup Environment
 
 ```bash
-export VM=win2022-vm-hjoshi1
-export NS=windows-bsod
+export VM="<vm-name>"
+export NS="<namespace>"
 
 # Verify guest agent is responsive before running anything
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py ping
@@ -390,8 +401,8 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py ping
 
 ```bash
 # ONE-TIME SETUP (run once per VM)
-export VM=win2022-vm-hjoshi1
-export NS=windows-bsod
+export VM="<vm-name>"
+export NS="<namespace>"
 
 # 1. Stage toolkit
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
@@ -412,9 +423,7 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
 
 # AFTER CRASH
 # 5. Extract evidence (guest is now offline/crashed)
-# Resolve disk image dynamically first (see "Resolving Disk Image Paths Dynamically" section)
-POD=$(oc get pod -n "$NS" -o name | grep "virt-launcher-${VM}" | head -1 | cut -d/ -f2)
-DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vda | awk '{print $2}')
+# Resolve POD and DISK_IMAGE — see "Resolving Disk Image Paths Dynamically" above
 ./host-tools/run.sh --disk "$DISK_IMAGE" \
   --out ./evidence/dumps
 ```
@@ -478,8 +487,8 @@ timeout 60 bash -c 'GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py 
 ### CI Operator Responsibilities
 
 ```bash
-export VM=win2022-vm-hjoshi1
-export NS=windows-bsod
+export VM="<vm-name>"
+export NS="<namespace>"
 
 # Step 1: ONE-TIME GUEST SETUP (before external test operator triggers BSOD)
 echo "=== Configuring guest for crash dump collection ==="
@@ -597,7 +606,7 @@ External Operator               CI Operator                 VM (Guest)
 
 ## Resolving Disk Image Paths Dynamically
 
-Instead of hardcoding disk image paths like `/var/lib/libvirt/images/win2022-vm-hjoshi1.qcow2`, you can extract the disk path dynamically from the running VM.
+Instead of hardcoding disk image paths like `/var/lib/libvirt/images/<vm-name>.qcow2`, the disk path can be extracted dynamically from the running VM.
 
 ### Why Dynamic Resolution?
 
@@ -612,8 +621,8 @@ Instead of hardcoding disk image paths like `/var/lib/libvirt/images/win2022-vm-
 
 ```bash
 # Variables
-VM="win2022-vm-hjoshi1"
-NS="windows-bsod"
+VM="<vm-name>"
+NS="<namespace>"
 DOM_NAME="${NS}_${VM}"
 
 # 1. Find the virt-launcher pod
@@ -628,20 +637,18 @@ DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "$DOM_NAME" | grep vda 
 
 **What each step does:**
 
-1. **Find the pod:** Queries KubeVirt for the virt-launcher pod managing your VM
+1. **Find the pod:** Queries KubeVirt for the virt-launcher pod managing the target VM
 2. **Extract disk:** Uses `virsh domblklist` to list block devices (returns path like `/var/lib/libvirt/images/...qcow2`)
 3. **Use path:** Pass to `host-tools/run.sh` for offline evidence extraction
 
-### In Your Test Script
+### In the Test Script
 
 The complete test script (`bsod-detector-test.sh`) automatically does this:
 
 ```bash
-# Step 0: Resolve VM configuration
-POD=$(oc get pod -n "$NS" -o name | grep "virt-launcher-${VM}" | head -1 | cut -d/ -f2)
-DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vda | awk '{print $2}')
+# Resolve POD and DISK_IMAGE — see "Resolving Disk Image Paths Dynamically" above
 
-# Step 3: Use resolved path for evidence extraction
+# Use resolved path for evidence extraction
 ./host-tools/run.sh --disk "$DISK_IMAGE" --out ./evidence/dumps
 ```
 
@@ -659,8 +666,8 @@ The toolkit supports **3 ways to trigger and capture a BSOD**:
 
 **CI Operator runs:**
 ```bash
-export VM=win2022-vm-hjoshi1
-export NS=windows-bsod
+export VM="<vm-name>"
+export NS="<namespace>"
 export KUBECONFIG=<path-to-kubeconfig>
 
 # ONE-TIME SETUP (run once per VM)
@@ -694,9 +701,7 @@ GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py exec \
 # Expected: TIMEOUT (guest has crashed, this is expected)
 
 # 6. Extract evidence offline (guest is now stopped)
-# IMPORTANT: Use dynamic disk path resolution (see section above)
-POD=$(oc get pod -n "$NS" -o name | grep "virt-launcher-${VM}" | head -1 | cut -d/ -f2)
-DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vda | awk '{print $2}')
+# Resolve POD and DISK_IMAGE — see "Resolving Disk Image Paths Dynamically" above
 ./host-tools/run.sh --disk "$DISK_IMAGE" --out ./evidence/dumps
 # Expected: MEMORY.DMP extracted, minidumps extracted, JSON result
 ```
@@ -720,8 +725,8 @@ DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vd
 
 **CI Operator runs:**
 ```bash
-export VM=win2022-vm-hjoshi1
-export NS=windows-bsod
+export VM="<vm-name>"
+export NS="<namespace>"
 export KUBECONFIG=<path-to-kubeconfig>
 
 # ONE-TIME SETUP (run once per VM)
@@ -785,11 +790,11 @@ See **[docs/natural-bsod-workflow.md](docs/natural-bsod-workflow.md)** for detai
 
 **CI Operator runs:**
 ```bash
-# IMPORTANT: Resolve disk image dynamically (see section above)
-VM="win2022-vm-hjoshi1"
-NS="windows-bsod"
-POD=$(oc get pod -n "$NS" -o name | grep "virt-launcher-${VM}" | head -1 | cut -d/ -f2)
-DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vda | awk '{print $2}')
+# Set these to match the target environment
+VM="<vm-name>"
+NS="<namespace>"
+
+# Resolve POD and DISK_IMAGE — see "Resolving Disk Image Paths Dynamically" above
 
 # Method 1: Direct extraction via host-tools
 ./host-tools/run.sh \
@@ -799,7 +804,7 @@ DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vd
 
 # Method 2: Via collect-offline orchestrator
 ./src/scripts/host/collect-offline.sh \
-  --vm win2022-vm-hjoshi1 \
+  --vm "$VM" \
   --out ./evidence
 # Expected: Full evidence bundle with analysis
 ```
@@ -825,7 +830,7 @@ DISK_IMAGE=$(oc -n "$NS" exec "$POD" -- virsh domblklist "${NS}_${VM}" | grep vd
 
 **Use when:** Testing in Kubernetes/OpenShift environment.
 
-**CI Operator location:** Your laptop or CI/CD pipeline  
+**CI Operator location:** The operator workstation or CI/CD pipeline  
 **Command pattern:**
 ```bash
 GA_VM=<vm-name> GA_NS=<namespace> python3 src/scripts/host/guest-agent.py <subcommand>
@@ -836,8 +841,8 @@ oc -n <namespace> exec <virt-launcher-pod> -- virsh <cmd>
 
 **Example (from earlier):**
 ```bash
-export VM=win2022-vm-hjoshi1
-export NS=windows-bsod
+export VM="<vm-name>"
+export NS="<namespace>"
 
 # Trigger crash injection
 GA_VM=$VM GA_NS=$NS python3 src/scripts/host/guest-agent.py psfile \
