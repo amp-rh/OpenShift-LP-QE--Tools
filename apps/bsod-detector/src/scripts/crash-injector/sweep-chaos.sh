@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+# sweep-chaos.sh — organic fault-injection sweep across chaos triggers.
+#
+# Iterates all triggers defined in src/data/chaos-triggers.json, exercising
+# host-side fault injection (NMI, balloon, storage, network, vCPU), Driver
+# Verifier stress, block I/O errors, and Hyper-V enlightenment permutations.
+#
+# Usage:
+#   sweep-chaos.sh [--prep-snapshots] [--trigger <id>] [--tier <n>]
+#
+# Options:
+#   --prep-snapshots   Create Driver Verifier snapshots (run once before sweep)
+#   --trigger <id>     Run only the named trigger
+#   --tier <n>         Run only triggers in tier <n>
+####
 exec {BASH_XTRACEFD}>/dev/null
 set -euxo pipefail; shopt -s inherit_errexit
 
@@ -19,7 +33,7 @@ while (($#)); do
     --prep-snapshots) mode="prep-snapshots"; shift ;;
     --trigger)        filterTrigger="${2:?--trigger requires an ID}"; shift 2 ;;
     --tier)           filterTier="${2:?--tier requires a number}"; shift 2 ;;
-    -h|--help)        sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help)        sed -n '/^#!/,/^####$/{/^#!/d;/^####$/d;s/^# \{0,1\}//p;}' "$0"; exit 0 ;;
     *)                : "unknown arg: $1"; exit 2 ;;
   esac
 done
@@ -27,7 +41,7 @@ done
 typeset originalXml=""
 
 # Poll SSH until the guest responds or maxAttempts is exhausted (8s intervals).
-function WaitSsh () {
+function wait_ssh () {
   typeset -i maxAttempts="${1:-30}"
   typeset -i i=0
   while ((i < maxAttempts)); do
@@ -42,7 +56,7 @@ function WaitSsh () {
 
 # Block until pvpanic signals a crash via libvirt lifecycle event, or timeout.
 # Falls back to domstate polling if virsh event is unavailable.
-function DetectCrash () {
+function detect_crash () {
   typeset -i timeoutSec="${1:-120}"
 
   typeset event=""
@@ -59,19 +73,19 @@ function DetectCrash () {
 }
 
 # Wait for guest reboot; force virsh reset if SSH does not return in time.
-function WaitReboot () {
+function wait_reboot () {
   typeset -i maxAttempts="${1:-40}"
-  if WaitSsh "${maxAttempts}"; then
+  if wait_ssh "${maxAttempts}"; then
     return 0
   fi
   virsh reset "${vmName}" 2>&1 || true
   sleep 30
-  WaitSsh 20
+  wait_ssh 20
   true
 }
 
 # Run collect-guest.ps1 via SSH and save guest-side crash evidence + host signals.
-function CollectGuestEvidence () {
+function collect_guest_evidence () {
   typeset triggerId="${1}"
   typeset chaosDir="output/chaos-${triggerId}"
   mkdir -p "${chaosDir}"
@@ -89,7 +103,7 @@ function CollectGuestEvidence () {
 }
 
 # Destroy the VM and extract crash evidence from the disk image offline.
-function CollectHostOfflineEvidence () {
+function collect_host_offline_evidence () {
   typeset triggerId="${1}"
   typeset chaosDir="output/chaos-${triggerId}"
   mkdir -p "${chaosDir}"
@@ -110,7 +124,7 @@ function CollectHostOfflineEvidence () {
 }
 
 # Write a JSON result file for one trigger run (outcome, elapsed, collection method).
-function RecordResult () {
+function record_result () {
   typeset triggerId="${1}"
   typeset outcome="${2}"
   typeset observedCode="${3:-null}"
@@ -138,7 +152,7 @@ PY
 }
 
 # Parse the bug check code from collect-guest.json, or "null" if unavailable.
-function ExtractObservedCode () {
+function extract_observed_code () {
   typeset triggerId="${1}"
   typeset chaosDir="output/chaos-${triggerId}"
   typeset jsonFile="${chaosDir}/collect-guest.json"
@@ -160,7 +174,7 @@ except Exception:
 
 # Ensure the domain has <panic model='isa'/> and on_crash=preserve.
 # Destroys a running domain if needed (caller must virsh start afterward).
-function EnsurePvpanicConfig () {
+function ensure_pvpanic_config () {
   typeset domState=''
   domState="$(virsh domstate "${vmName}" 2>/dev/null)" || domState="unknown"
 
@@ -201,14 +215,14 @@ sys.stdout.write(xml)
 }
 
 # Snapshot the current domain XML so it can be restored after trigger-specific changes.
-function SaveOriginalDomainXml () {
+function save_original_domain_xml () {
   originalXml="$(mktemp /tmp/chaos-original-XXXXXX.xml)"
   virsh dumpxml "${vmName}" > "${originalXml}" 2>&1
   true
 }
 
 # Redefine the domain from the saved XML and clean up the temp file.
-function RestoreOriginalDomainXml () {
+function restore_original_domain_xml () {
   if [[ -n "${originalXml}" && -f "${originalXml}" ]]; then
     virsh define "${originalXml}" 2>&1 || true
     rm -f "${originalXml}"
@@ -218,10 +232,10 @@ function RestoreOriginalDomainXml () {
 }
 
 # Disable specified Hyper-V enlightenments in the domain XML for testing.
-function ApplyEnlightenmentToggles () {
+function apply_enlightenment_toggles () {
   typeset triggerJson="${1}"
 
-  SaveOriginalDomainXml
+  save_original_domain_xml
 
   typeset modifiedXml=''; modifiedXml="$(mktemp /tmp/chaos-modified-XXXXXX.xml)"
   cp "${originalXml}" "${modifiedXml}"
@@ -247,13 +261,13 @@ for e in t.get('disableEnlightenments', []):
 }
 
 # Inject a non-maskable interrupt into the guest.
-function ExecuteNmiInject () {
+function execute_nmi_inject () {
   virsh inject-nmi "${vmName}" 2>&1
   true
 }
 
 # Reduce guest memory via virtio-balloon to targetMemoryKiB.
-function ExecuteBalloonSqueeze () {
+function execute_balloon_squeeze () {
   typeset triggerJson="${1}"
   typeset -i targetKiB=0; targetKiB=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('targetMemoryKiB', 1048576))")
   virsh setmem "${vmName}" "${targetKiB}" 2>&1
@@ -261,7 +275,7 @@ function ExecuteBalloonSqueeze () {
 }
 
 # Live-detach a disk device from the guest.
-function ExecuteDeviceHotremove () {
+function execute_device_hotremove () {
   typeset triggerJson="${1}"
   typeset deviceTarget=''; deviceTarget=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('deviceTarget', 'vda'))")
   virsh detach-disk "${vmName}" "${deviceTarget}" --live 2>&1 || true
@@ -269,7 +283,7 @@ function ExecuteDeviceHotremove () {
 }
 
 # Bring the guest NIC down for 10 seconds, then back up.
-function ExecuteNetworkToggle () {
+function execute_network_toggle () {
   typeset iface=""
   if ! iface=$(virsh domiflist "${vmName}" 2>/dev/null | awk 'NR>2 && NF{print $1; exit}'); then
     iface=""
@@ -285,7 +299,7 @@ function ExecuteNetworkToggle () {
 }
 
 # Reduce live vCPU count to targetVcpus.
-function ExecuteVcpuHotremove () {
+function execute_vcpu_hotremove () {
   typeset triggerJson="${1}"
   typeset -i targetVcpus=0; targetVcpus=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('targetVcpus', 1))")
   virsh setvcpus "${vmName}" "${targetVcpus}" --live 2>&1 || true
@@ -293,7 +307,7 @@ function ExecuteVcpuHotremove () {
 }
 
 # Inject EIO errors on all block I/O via QMP blkdebug interposition.
-function ExecuteBlkdebugConfig () {
+function execute_blkdebug_config () {
   virsh qemu-monitor-command "${vmName}" '{
     "execute": "blockdev-add",
     "arguments": {
@@ -322,7 +336,7 @@ function ExecuteBlkdebugConfig () {
 }
 
 # Throttle block I/O to near-zero IOPS/bandwidth via blkdeviotune.
-function ExecuteBlkdeviotune () {
+function execute_blkdeviotune () {
   typeset triggerJson="${1}"
   typeset deviceTarget=''; deviceTarget=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('deviceTarget', 'vda'))")
   typeset -i iops=0; iops=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('throttleTotalIopsSec', 1))")
@@ -333,7 +347,7 @@ function ExecuteBlkdeviotune () {
 }
 
 # Inject a Machine Check Exception into vCPU 0 via QMP HMP passthrough.
-function ExecuteMceInject () {
+function execute_mce_inject () {
   typeset triggerJson="${1}"
   typeset mceCmd=''
   mceCmd=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('mceCommandLine','mce 0 9 0xbd80000000000164 0xb200000000000000 0 0 0'))")
@@ -343,7 +357,7 @@ function ExecuteMceInject () {
 }
 
 # Pause the VM for pauseSeconds, then resume to test clock desync handling.
-function ExecutePauseResume () {
+function execute_pause_resume () {
   typeset triggerJson="${1}"
   typeset -i pauseSec=0
   pauseSec=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('pauseSeconds', 20))")
@@ -354,7 +368,7 @@ function ExecutePauseResume () {
 }
 
 # Suspend the guest via ACPI (requires QEMU guest agent) and wake after delay.
-function ExecuteAcpiSuspend () {
+function execute_acpi_suspend () {
   typeset triggerJson="${1}"
   typeset suspendType=''
   suspendType=$(echo "${triggerJson}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('suspendType', 'mem'))")
@@ -367,7 +381,7 @@ function ExecuteAcpiSuspend () {
 }
 
 # Write MSRs to vCPU 0 via kvm-msr-write.py while the VM is paused.
-function ExecuteMsrWrite () {
+function execute_msr_write () {
   typeset triggerJson="${1}"
   virsh qemu-monitor-command "${vmName}" '{"execute":"stop"}' 2>&1
   sleep 1
@@ -386,8 +400,8 @@ for w in json.load(sys.stdin).get('msrWrites', []):
 }
 
 # Enable ACPI suspend-to-mem in domain XML (required for dompmsuspend).
-function ApplyAcpiSuspendXml () {
-  SaveOriginalDomainXml
+function apply_acpi_suspend_xml () {
+  save_original_domain_xml
   typeset modifiedXml=''; modifiedXml="$(mktemp /tmp/chaos-modified-XXXXXX.xml)"
 
   python3 -c "
@@ -408,7 +422,7 @@ with open(sys.argv[2], 'w') as f:
 }
 
 # Execute one chaos trigger: revert snapshot, apply XML, run trigger, detect crash, collect evidence.
-function RunTrigger () {
+function run_trigger () {
   typeset triggerId="${1}"
   typeset triggerJson="${2}"
 
@@ -425,7 +439,7 @@ function RunTrigger () {
 
   if ((requiresManual)); then
     : "[${triggerId}] SKIP: requires manual domain XML setup"
-    RecordResult "${triggerId}" "skipped" "null" 0 "none"
+    record_result "${triggerId}" "skipped" "null" 0 "none"
     return 0
   fi
 
@@ -433,28 +447,28 @@ function RunTrigger () {
   : "[${triggerId}] reverting to ${snapshot}"
   if ! virsh snapshot-revert "${vmName}" "${snapshot}" 2>&1; then
     : "[${triggerId}] FAIL: snapshot ${snapshot} not found"
-    RecordResult "${triggerId}" "error" "null" 0 "none"
-    RestoreOriginalDomainXml
+    record_result "${triggerId}" "error" "null" 0 "none"
+    restore_original_domain_xml
     return 0
   fi
 
   # --- Apply domain XML changes (after revert restores snapshot config, before start) ---
-  EnsurePvpanicConfig
+  ensure_pvpanic_config
   if [[ "${method}" == "enlightenment-toggle" ]]; then
-    ApplyEnlightenmentToggles "${triggerJson}"
+    apply_enlightenment_toggles "${triggerJson}"
   fi
   if [[ "${method}" == "acpi-suspend" ]]; then
-    ApplyAcpiSuspendXml
+    apply_acpi_suspend_xml
   fi
 
   virsh start "${vmName}" 2>&1 || true
 
   # --- Wait for SSH ---
   : "[${triggerId}] waiting for SSH"
-  if ! WaitSsh 30; then
+  if ! wait_ssh 30; then
     : "[${triggerId}] FAIL: SSH never came up after revert"
-    RecordResult "${triggerId}" "error" "null" 0 "none"
-    RestoreOriginalDomainXml
+    record_result "${triggerId}" "error" "null" 0 "none"
+    restore_original_domain_xml
     return 0
   fi
 
@@ -471,20 +485,20 @@ function RunTrigger () {
   SECONDS=0
   : "[${triggerId}] executing trigger (method=${method})"
   case "${method}" in
-    nmi-inject)          ExecuteNmiInject ;;
-    balloon-squeeze)     ExecuteBalloonSqueeze "${triggerJson}" ;;
-    device-hotremove)    ExecuteDeviceHotremove "${triggerJson}" ;;
-    network-toggle)      ExecuteNetworkToggle ;;
-    vcpu-hotremove)      ExecuteVcpuHotremove "${triggerJson}" ;;
+    nmi-inject)          execute_nmi_inject ;;
+    balloon-squeeze)     execute_balloon_squeeze "${triggerJson}" ;;
+    device-hotremove)    execute_device_hotremove "${triggerJson}" ;;
+    network-toggle)      execute_network_toggle ;;
+    vcpu-hotremove)      execute_vcpu_hotremove "${triggerJson}" ;;
     verifier-stress)     : "no host trigger; crash comes from verifier + workload" ;;
-    blkdeviotune)        ExecuteBlkdeviotune "${triggerJson}" ;;
-    blkdebug-config)     ExecuteBlkdebugConfig ;;
+    blkdeviotune)        execute_blkdeviotune "${triggerJson}" ;;
+    blkdebug-config)     execute_blkdebug_config ;;
     enlightenment-toggle) : "enlightenment applied at define time; workload is the trigger" ;;
-    mce-inject)          ExecuteMceInject "${triggerJson}" ;;
+    mce-inject)          execute_mce_inject "${triggerJson}" ;;
     guest-only)          : "no host trigger; guest workload is the trigger" ;;
-    pause-resume)        ExecutePauseResume "${triggerJson}" ;;
-    acpi-suspend)        ExecuteAcpiSuspend "${triggerJson}" ;;
-    msr-write)           ExecuteMsrWrite "${triggerJson}" ;;
+    pause-resume)        execute_pause_resume "${triggerJson}" ;;
+    acpi-suspend)        execute_acpi_suspend "${triggerJson}" ;;
+    msr-write)           execute_msr_write "${triggerJson}" ;;
     *) : "[${triggerId}] WARN: unknown method ${method}" ;;
   esac
 
@@ -496,7 +510,7 @@ function RunTrigger () {
   # --- Detect crash ---
   : "[${triggerId}] watching for crash (timeout=${timeoutSec}s)"
   typeset outcome="no-crash"
-  if DetectCrash "${timeoutSec}"; then
+  if detect_crash "${timeoutSec}"; then
     outcome="crashed"
     : "[${triggerId}] crash detected at ${SECONDS}s"
   else
@@ -538,16 +552,16 @@ function RunTrigger () {
 
     if [[ "${collectionPath}" == "host-offline" ]]; then
       : "[${triggerId}] collecting via host-offline extraction"
-      CollectHostOfflineEvidence "${triggerId}"
+      collect_host_offline_evidence "${triggerId}"
       collectedVia="host-offline"
     else
       : "[${triggerId}] waiting for reboot to collect guest evidence"
-      if WaitReboot 40; then
-        CollectGuestEvidence "${triggerId}"
+      if wait_reboot 40; then
+        collect_guest_evidence "${triggerId}"
         collectedVia="guest"
       else
         : "[${triggerId}] guest did not reboot; falling back to host-offline"
-        CollectHostOfflineEvidence "${triggerId}"
+        collect_host_offline_evidence "${triggerId}"
         collectedVia="host-offline"
       fi
     fi
@@ -555,25 +569,25 @@ function RunTrigger () {
     if ((crashExpected)); then
       : "[${triggerId}] expected crash did not occur"
     fi
-    CollectGuestEvidence "${triggerId}"
+    collect_guest_evidence "${triggerId}"
     collectedVia="guest"
   fi
 
   # --- Extract observed code ---
-  typeset observedCode=''; observedCode=$(ExtractObservedCode "${triggerId}")
+  typeset observedCode=''; observedCode=$(extract_observed_code "${triggerId}")
 
   # --- Record result ---
-  typeset resultJson=''; resultJson=$(RecordResult "${triggerId}" "${outcome}" "${observedCode}" "${elapsed}" "${collectedVia}")
+  typeset resultJson=''; resultJson=$(record_result "${triggerId}" "${outcome}" "${observedCode}" "${elapsed}" "${collectedVia}")
   : "[${triggerId}] result: ${outcome} code=${observedCode} elapsed=${elapsed}s via=${collectedVia}"
   echo "${resultJson}"
 
   # --- Restore domain XML if modified ---
-  RestoreOriginalDomainXml
+  restore_original_domain_xml
   true
 }
 
 # Create Driver Verifier snapshots by enabling verifier flags and rebooting from crashme-installed.
-function PrepSnapshots () {
+function prep_snapshots () {
   : "=== PREPARING CHAOS SNAPSHOTS ==="
 
   while IFS= read -r entry; do
@@ -592,7 +606,7 @@ function PrepSnapshots () {
     virsh start "${vmName}" 2>&1 || true
 
     : "[prep] waiting for SSH"
-    if ! WaitSsh 30; then
+    if ! wait_ssh 30; then
       : "[prep] FAIL: SSH never came up"
       continue
     fi
@@ -604,7 +618,7 @@ function PrepSnapshots () {
     ./host/guest-ssh.sh -c "Restart-Computer -Force" 2>&1 || true
     sleep 30
 
-    if ! WaitSsh 30; then
+    if ! wait_ssh 30; then
       : "[prep] FAIL: guest did not come back after verifier reboot"
       continue
     fi
@@ -638,7 +652,7 @@ PY
 }
 
 # Main entry: iterate all chaos triggers (optionally filtered by --trigger or --tier).
-function SweepChaos () {
+function sweep_chaos () {
   typeset -a triggerIds=()
   while IFS= read -r tid; do
     triggerIds+=("${tid}")
@@ -666,7 +680,7 @@ triggers = json.load(open(sys.argv[1]))['triggers']
 print(json.dumps(triggers[sys.argv[2]]))
 " "${triggerFile}" "${triggerId}")
 
-    RunTrigger "${triggerId}" "${triggerJson}"
+    run_trigger "${triggerId}" "${triggerJson}"
   done
 
   : "=== CHAOS SWEEP COMPLETE ==="
@@ -693,8 +707,8 @@ PY
 }
 
 if [[ "${mode}" == "prep-snapshots" ]]; then
-  PrepSnapshots
+  prep_snapshots
 else
-  SweepChaos
+  sweep_chaos
 fi
 true

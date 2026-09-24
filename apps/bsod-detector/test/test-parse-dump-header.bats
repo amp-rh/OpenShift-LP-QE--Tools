@@ -3,11 +3,11 @@
 load test-helper
 
 setup() {
-  SetupTemp
+  setup_temp
 }
 
 teardown() {
-  TeardownTemp
+  teardown_temp
 }
 
 create_pagedu64_dump() {

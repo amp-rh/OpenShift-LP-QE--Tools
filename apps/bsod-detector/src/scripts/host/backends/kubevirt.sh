@@ -27,9 +27,9 @@ function _virt_launcher_pod () {
     | sed -n "/virt-launcher-${1}-/p" | head -n1 | cut -d/ -f2
 }
 
-# DomainState <vm> — print the VM state as one of the canonical vocabulary.
+# domain_state <vm> — print the VM state as one of the canonical vocabulary.
 # UNTESTED: requires live KubeVirt cluster.
-function DomainState () {
+function domain_state () {
   _resolve_ns || { echo "unknown"; return; }
   typeset phase
   phase="$(oc get vmi "$1" -n "${_kubevirt_ns}" -o jsonpath='{.status.phase}' 2>/dev/null)" || { echo "unknown"; return; }
@@ -40,12 +40,12 @@ function DomainState () {
   esac
 }
 
-# DetectCrash <vm> — exit 0 if the VM appears crashed or hung.
+# detect_crash <vm> — exit 0 if the VM appears crashed or hung.
 # UNTESTED: uses qemu-guest-agent ping via the virt-launcher pod.
-function DetectCrash () {
+function detect_crash () {
   _resolve_ns || return 1
   typeset state
-  state="$(DomainState "$1")"
+  state="$(domain_state "$1")"
   if [[ "${state}" != "running" ]]; then
     [[ "${state}" == "off" ]] && return 1
     return 0
@@ -62,33 +62,33 @@ function DetectCrash () {
   return 1  # running and healthy
 }
 
-# StartVM <vm> — start the VM via virtctl.
+# start_vm <vm> — start the VM via virtctl.
 # UNTESTED: requires live KubeVirt cluster.
-function StartVM () {
+function start_vm () {
   _resolve_ns || return 1
   virtctl start "$1" -n "${_kubevirt_ns}" 2>/dev/null || \
     oc patch vm "$1" -n "${_kubevirt_ns}" --type merge -p '{"spec":{"running":true}}' 2>/dev/null
 }
 
-# StopVM <vm> — graceful shutdown via virtctl.
+# stop_vm <vm> — graceful shutdown via virtctl.
 # UNTESTED: requires live KubeVirt cluster.
-function StopVM () {
+function stop_vm () {
   _resolve_ns || return 1
   virtctl stop "$1" -n "${_kubevirt_ns}" 2>/dev/null || \
     oc patch vm "$1" -n "${_kubevirt_ns}" --type merge -p '{"spec":{"running":false}}' 2>/dev/null
 }
 
-# KillVM <vm> — force stop via virtctl.
+# kill_vm <vm> — force stop via virtctl.
 # UNTESTED: requires live KubeVirt cluster.
-function KillVM () {
+function kill_vm () {
   _resolve_ns || return 1
   virtctl stop "$1" -n "${_kubevirt_ns}" --force 2>/dev/null || \
     oc delete vmi "$1" -n "${_kubevirt_ns}" 2>/dev/null
 }
 
-# Screenshot <vm> <outfile> — capture via virsh screenshot inside virt-launcher.
+# screenshot <vm> <outfile> — capture via virsh screenshot inside virt-launcher.
 # UNTESTED: requires live KubeVirt cluster.
-function Screenshot () {
+function screenshot () {
   _resolve_ns || return 1
   typeset pod
   pod="$(_virt_launcher_pod "$1")"
@@ -99,23 +99,23 @@ function Screenshot () {
   oc cp "${_kubevirt_ns}/${pod}:/tmp/screenshot.ppm" "$2" >/dev/null 2>&1
 }
 
-# SnapshotCreate <vm> <name> — NOT SUPPORTED on KubeVirt.
+# snapshot_create <vm> <name> — NOT SUPPORTED on KubeVirt.
 # KubeVirt VMs use PVC-based storage; snapshotting requires
 # VolumeSnapshot CRDs, which is a different workflow.
-function SnapshotCreate () {
-  echo "kubevirt: SnapshotCreate not supported (use VolumeSnapshot CRDs)" >&2
+function snapshot_create () {
+  echo "kubevirt: snapshot_create not supported (use VolumeSnapshot CRDs)" >&2
   return 1
 }
 
-# SnapshotRevert <vm> <name> — NOT SUPPORTED on KubeVirt.
-function SnapshotRevert () {
-  echo "kubevirt: SnapshotRevert not supported (use VolumeSnapshot CRDs)" >&2
+# snapshot_revert <vm> <name> — NOT SUPPORTED on KubeVirt.
+function snapshot_revert () {
+  echo "kubevirt: snapshot_revert not supported (use VolumeSnapshot CRDs)" >&2
   return 1
 }
 
-# MemoryDump <vm> <outfile> — capture via virsh dump inside virt-launcher.
+# memory_dump <vm> <outfile> — capture via virsh dump inside virt-launcher.
 # UNTESTED: requires live KubeVirt cluster.
-function MemoryDump () {
+function memory_dump () {
   _resolve_ns || return 1
   typeset pod
   pod="$(_virt_launcher_pod "$1")"
@@ -126,19 +126,19 @@ function MemoryDump () {
   oc cp "${_kubevirt_ns}/${pod}:/tmp/guest-memory.elf" "$2" >/dev/null 2>&1
 }
 
-# GuestIP <vm> — print the guest IP from the VMI status.
+# guest_ip <vm> — print the guest IP from the VMI status.
 # UNTESTED: requires live KubeVirt cluster.
-function GuestIP () {
+function guest_ip () {
   _resolve_ns || return 1
   oc get vmi "$1" -n "${_kubevirt_ns}" \
     -o jsonpath='{.status.interfaces[0].ipAddress}' 2>/dev/null
 }
 
-# GuestDisk <vm> — NOT DIRECTLY ACCESSIBLE on KubeVirt.
+# guest_disk <vm> — NOT DIRECTLY ACCESSIBLE on KubeVirt.
 # The guest disk is inside a PVC on the cluster, not a host path.
 # Returns the PVC name for documentation; extraction requires a
 # privileged pod or CDI-based export.
-function GuestDisk () {
+function guest_disk () {
   _resolve_ns || return 1
   oc get vm "$1" -n "${_kubevirt_ns}" \
     -o jsonpath='{.spec.template.spec.volumes[0].persistentVolumeClaim.claimName}' 2>/dev/null
