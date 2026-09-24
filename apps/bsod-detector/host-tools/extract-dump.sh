@@ -29,10 +29,10 @@ exec {BASH_XTRACEFD}>/dev/null
 typeset disk=''
 typeset out='/out'
 typeset winRoot='/Windows'
-# warn — print a diagnostic message to stderr.
-function warn () { echo "extract-dump: $*" >&2; true; }
-# emit — write the final JSON result object to stdout.
-function emit () {
+# Warn — print a diagnostic message to stderr.
+function Warn () { echo "extract-dump: $*" >&2; true; }
+# Emit — write the final JSON result object to stdout.
+function Emit () {
   printf '{"ok":%s,"disk":%s,"outputDir":%s,"dumpFiles":%s,"warnings":%s}\n' \
     "$1" "$(jq -Rn --arg v "${disk}" '$v')" "$(jq -Rn --arg v "${out}" '$v')" \
     "${filesJson:-[]}" "${warnJson:-[]}"
@@ -45,13 +45,13 @@ while [[ $# -gt 0 ]]; do
     --out) out="$2"; shift 2 ;;
     --windows-root) winRoot="$2"; shift 2 ;;
     -h|--help)
-      sed -n '/^#!/,/^####$/{/^#!/d;/^####$/d;s/^# \{0,1\}//p;}' "$0"; exit 0 ;;
-    *) warn "unknown arg: $1"; exit 2 ;;
+      sed -n '/^#!/,/^####$/{/^#!/d;/^####$/d;s/^# //p;}' "$0"; exit 0 ;;
+    *) Warn "unknown arg: $1"; exit 2 ;;
   esac
 done
 
-[[ -n "${disk}" ]] || { warn "--disk is required"; exit 2; }
-[[ -f "${disk}" ]] || { warn "disk not found: ${disk}"; exit 2; }
+[[ -n "${disk}" ]] || { Warn "--disk is required"; exit 2; }
+[[ -f "${disk}" ]] || { Warn "disk not found: ${disk}"; exit 2; }
 mkdir -p "${out}"
 
 typeset -a warns=()
@@ -59,8 +59,8 @@ typeset -a found=()
 
 # Locate the Windows partition automatically; -i inspects the OS layout.
 # virt-copy-out reads read-only by default.
-# copy_out — copy a file from the guest disk image to the output directory.
-function copy_out () {
+# CopyOut — copy a file from the guest disk image to the output directory.
+function CopyOut () {
   typeset src="${winRoot}/$1"
   if virt-ls -a "${disk}" "${src}" >/dev/null 2>&1; then
     virt-copy-out -a "${disk}" "${src}" "${out}" 2>>/tmp/err && return 0
@@ -69,7 +69,7 @@ function copy_out () {
 }
 
 # MEMORY.DMP (kernel/complete dump)
-if copy_out "MEMORY.DMP"; then
+if CopyOut "MEMORY.DMP"; then
   found+=("MEMORY.DMP")
 else
   warns+=("MEMORY.DMP not found - dump type may be misconfigured or none written")
@@ -89,7 +89,7 @@ typeset evtxDir="${winRoot}/System32/winevt/Logs"
 typeset -a evtxTargets=("System.evtx" "Application.evtx")
 mkdir -p "${out}/winevt" 2>/dev/null || true
 for evtxName in "${evtxTargets[@]}"; do
-  if copy_out "System32/winevt/Logs/${evtxName}"; then
+  if CopyOut "System32/winevt/Logs/${evtxName}"; then
     # virt-copy-out preserves the path structure; move to our flat winevt/ dir
     typeset srcEvtx="${out}/${evtxName}"
     [[ -f "${srcEvtx}" ]] && mv "${srcEvtx}" "${out}/winevt/${evtxName}" 2>/dev/null || true
@@ -104,6 +104,6 @@ filesJson="$(printf '%s\n' "${found[@]:-}" | jq -Rn '[inputs | select(length > 0
 typeset warnJson=''
 warnJson="$(printf '%s\n' "${warns[@]:-}" | jq -Rn '[inputs | select(length > 0)]')"
 
-if [[ "${#found[@]}" -eq 0 ]]; then emit false; exit 1; fi
-emit true
+if [[ "${#found[@]}" -eq 0 ]]; then Emit false; exit 1; fi
+Emit true
 true
