@@ -14,6 +14,7 @@
 # Usage:
 #   host-tools/run.sh --disk /var/lib/libvirt/images/bsod-test.qcow2
 #   host-tools/run.sh --disk <img> --out ./output/dumps
+#   host-tools/run.sh --disk <imgFile> [--out <outDir>]
 #
 # Build the image first (from the repo root):
 #   make -C image/container/bsod-detector build IMAGE_TAG=host-tools
