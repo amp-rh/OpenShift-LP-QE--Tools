@@ -11,7 +11,8 @@
 #
 # Examples:
 #   host-tools/run.sh --disk /var/lib/libvirt/images/bsod-test.qcow2
-#   host-tools/run.sh --disk /images/guest.qcow2 --out ./output/dumps
+#   host-tools/run.sh --disk <img> --out ./output/dumps
+#   host-tools/run.sh --disk <imgFile> [--out <outDir>]
 #
 # See README.md for build instructions and BSOD_HOST_IMAGE override.
 ####
