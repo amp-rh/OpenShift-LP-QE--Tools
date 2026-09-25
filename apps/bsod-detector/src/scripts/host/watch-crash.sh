@@ -171,8 +171,20 @@ function collect_after_reboot () {
     sleep 5; t=$((t+5))
   done
   if ! ping_ok; then
-    log "guest did NOT reboot within ${rebootWait}s -- likely HARD FREEZE (typical for HYPERVISOR_ERROR)."
-    log "guest dump is not retrievable from a frozen guest; rely on host-signals.json above."
+    log "guest did NOT reboot within ${rebootWait}s -- HARD FREEZE detected."
+    log "MEMORY.DMP is already written to guest disk before freeze."
+    log "Triggering offline dump retrieval via ODF VolumeSnapshot (no reboot needed)..."
+    if [ -f "${scriptDir}/recover-natural-crash.sh" ]; then
+      bash "${scriptDir}/recover-natural-crash.sh" \
+        --ns  "${ns}" \
+        --vm  "${vm}" \
+        --out "${outDir}" \
+        --path2-only 2>&1 | while IFS= read -r line; do log "${line}"; done || true
+      bugCheck="$(jq -r '.dumps[0].bugCheckName // empty' "${outDir}/parse-dump-header.json" 2>/dev/null)" || true
+    else
+      log "recover-natural-crash.sh not found — skipping offline retrieval."
+      log "Run manually: bash recover-natural-crash.sh --ns ${ns} --vm ${vm} --out ${outDir} --path2-only"
+    fi
     return 0
   fi
   rebooted=true
