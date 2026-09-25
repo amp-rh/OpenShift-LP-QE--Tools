@@ -319,36 +319,51 @@ main() {
     [ -n "$TRIGGER_PID" ] && kill "$TRIGGER_PID" 2>/dev/null || true
     set -e
 
-    # Step 8: Verify guest is back online + confirm a FRESH dump was written
+    # Step 8: Check if guest rebooted or hard-froze, then retrieve dump accordingly
     log_info ""
-    log_info "STEP 8: Final guest online check + dump verification"
+    log_info "STEP 8: Guest state check + dump retrieval"
     set +e
-    if GA_VM="$VM_NAME" GA_NS="$NAMESPACE" timeout 5 python3 src/scripts/host/guest-agent.py ping > /dev/null 2>&1; then
-        log_success "Guest is ONLINE and responsive!"
-    else
-        log_warning "Guest not yet responsive — waiting 60s more..."
-        sleep 60
-        if GA_VM="$VM_NAME" GA_NS="$NAMESPACE" timeout 5 python3 src/scripts/host/guest-agent.py ping > /dev/null 2>&1; then
-            log_success "Guest is ONLINE after extra wait!"
-        else
-            log_warning "Guest still offline — may need manual check"
-        fi
-    fi
 
-    # Verify a fresh dump was actually written on the guest.
-    # If dump is missing or suspiciously small (<10MB), the crash may not have
-    # produced a proper dump — likely because MEMORY.DMP existed before and
-    # Windows wrote only a differential/partial dump.
-    log_info "  Verifying fresh dump was written on guest..."
-    DUMP_CHECK=$(GA_VM="$VM_NAME" GA_NS="$NAMESPACE" timeout 20 \
-        python3 src/scripts/host/guest-agent.py exec powershell.exe -NoProfile -Command \
-        "\$mini = Get-ChildItem 'C:\Windows\Minidump\' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1;
-         \$mem  = if (Test-Path 'C:\Windows\MEMORY.DMP') { Get-Item 'C:\Windows\MEMORY.DMP' } else { \$null };
-         if (\$mini) { Write-Host ('MINIDUMP: ' + \$mini.Name + ' | ' + \$mini.Length + ' bytes | ' + \$mini.LastWriteTime) }
-         else         { Write-Host 'MINIDUMP: none found' }
-         if (\$mem)  { Write-Host ('MEMORY.DMP: ' + \$mem.Length + ' bytes | ' + \$mem.LastWriteTime) }
-         else         { Write-Host 'MEMORY.DMP: not present (still writing or not configured)' }" 2>&1)
-    echo "$DUMP_CHECK" | tee -a "$LOG_FILE"
+    if [ $REBOOT_DETECTED -eq 1 ]; then
+        # ── Guest rebooted cleanly — verify dump via QGA ──────────────────────
+        log_success "Guest rebooted — verifying fresh dump via QGA..."
+
+        DUMP_CHECK=$(GA_VM="$VM_NAME" GA_NS="$NAMESPACE" timeout 20 \
+            python3 src/scripts/host/guest-agent.py exec powershell.exe -NoProfile -Command \
+            "\$mini = Get-ChildItem 'C:\Windows\Minidump\' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1;
+             \$mem  = if (Test-Path 'C:\Windows\MEMORY.DMP') { Get-Item 'C:\Windows\MEMORY.DMP' } else { \$null };
+             if (\$mini) { Write-Host ('MINIDUMP: ' + \$mini.Name + ' | ' + \$mini.Length + ' bytes | ' + \$mini.LastWriteTime) }
+             else         { Write-Host 'MINIDUMP: none found' }
+             if (\$mem)  { Write-Host ('MEMORY.DMP: ' + \$mem.Length + ' bytes | ' + \$mem.LastWriteTime) }
+             else         { Write-Host 'MEMORY.DMP: not present' }" 2>&1)
+        echo "$DUMP_CHECK" | tee -a "$LOG_FILE"
+
+    else
+        # ── Hard freeze — VM did not reboot ───────────────────────────────────
+        # MEMORY.DMP is already written to disk from the BSOD sequence.
+        # No reboot needed — retrieve offline via ODF VolumeSnapshot → libguestfs.
+        log_warning "Guest did NOT reboot (hard freeze) — MEMORY.DMP is on disk."
+        log_info "  Triggering offline dump retrieval via ODF VolumeSnapshot (no reboot required)..."
+
+        RECOVER_SCRIPT="$(dirname "$0")/../host/recover-natural-crash.sh"
+        # fallback path if running from detector root
+        [ -f "$RECOVER_SCRIPT" ] || RECOVER_SCRIPT="src/scripts/host/recover-natural-crash.sh"
+
+        if [ -f "$RECOVER_SCRIPT" ]; then
+            bash "$RECOVER_SCRIPT" \
+                --ns  "$NAMESPACE" \
+                --vm  "$VM_NAME" \
+                --out "$EVIDENCE_DIR" \
+                --path2-only 2>&1 | tee -a "$LOG_FILE" || true
+            log_success "Offline dump retrieval complete — check $EVIDENCE_DIR"
+        else
+            log_warning "recover-natural-crash.sh not found."
+            log_warning "Run manually:"
+            log_warning "  bash src/scripts/host/recover-natural-crash.sh \\"
+            log_warning "    --ns $NAMESPACE --vm $VM_NAME --out $EVIDENCE_DIR --path2-only"
+        fi
+        DUMP_CHECK="offline-retrieval"
+    fi
 
     if echo "$DUMP_CHECK" | grep -q "MINIDUMP: none found"; then
         log_warning "  No minidump found — dump may not have been written. Check CrashControl settings."
