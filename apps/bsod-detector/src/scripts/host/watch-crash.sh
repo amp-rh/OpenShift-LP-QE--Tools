@@ -100,8 +100,10 @@ export GA_NS="${ns}" GA_POD="${pod}" GA_DOM="${dom}"
 function log () { echo "[$(date -u +%H:%M:%S)] $*"; true; }
 # ga — invoke the guest-agent.py helper with the given arguments.
 function ga () { python3 "${scriptDir}/guest-agent.py" "$@"; }
-# ping_ok — return 0 if the qemu-guest-agent responds to a ping.
-function ping_ok () { ga ping >/dev/null 2>&1; }
+# ping_ok — return 0 if the qemu-guest-agent responds to a ping within 10s.
+# The 10s bash-level timeout ensures that if the guest crashes mid-virsh-call
+# (orphaned QGA socket), the ping fails fast instead of blocking for 300s.
+function ping_ok () { timeout 10 python3 "${scriptDir}/guest-agent.py" ping >/dev/null 2>&1; }
 # domstate — query the libvirt domain state inside the virt-launcher pod.
 function domstate () { oc exec -n "${ns}" "${pod}" -- virsh domstate "${dom}" 2>/dev/null | tr -d '[:space:]'; }
 
@@ -226,7 +228,8 @@ until ping_ok; do log "waiting for guest agent to be reachable ..."; sleep "${in
 log "guest agent healthy; watching for a natural crash ..."
 
 # Keep the display awake so pre-crash/repaint frames aren't all-black (DPMS). Best-effort.
-ga exec powercfg /change monitor-timeout-ac 0 >/dev/null 2>&1 || true
+# Wrapped with timeout 15 so a crash immediately after startup cannot block this forever.
+timeout 15 ga exec powercfg /change monitor-timeout-ac 0 >/dev/null 2>&1 || true
 
 # A natural bugcheck may leave the domain 'running' (pure hang) OR, if the VM has a
 # pvpanic device, transition it to paused/crashed/pmsuspended. All of those, with a

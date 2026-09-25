@@ -28,7 +28,9 @@ build: validate
 	    echo 'Building container image: $(IMAGE_FULL)'; \
 	    [ -d '../../../$(APP_DIR)' ] || { echo 'ERROR: Build context not found: ../../../$(APP_DIR)' >&2; exit 1; }; \
 	    [ -f Dockerfile ] || { echo 'ERROR: Dockerfile not found in current directory' >&2; exit 1; }; \
-	    podman build -t '$(IMAGE_FULL)' -f Dockerfile '../../../$(APP_DIR)'; \
+	    podman build -t '$(IMAGE_FULL)' \
+	        -f image/container/bsod-detector/Dockerfile \
+	        '../../../$(APP_DIR)'; \
 	    echo 'Successfully built: $(IMAGE_FULL)'; \
 	}
 

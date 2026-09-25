@@ -7,6 +7,7 @@ src/test-driver/libntoskrnl.a
 
 # Runtime output
 output/
+evidence/
 
 # Secrets
 .env
