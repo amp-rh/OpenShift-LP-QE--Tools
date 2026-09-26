@@ -1,0 +1,9 @@
+<domain type="kvm">
+  <devices>
+    <disk type="block" device="disk">
+      <source dev="/dev/fixture-rootdisk"/>
+      <target dev="vda" bus="virtio"/>
+      <alias name="ua-rootdisk"/>
+    </disk>
+  </devices>
+</domain>

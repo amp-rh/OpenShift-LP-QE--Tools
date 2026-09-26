@@ -23,7 +23,6 @@
 #   GA_NS                  Kubernetes namespace (required for watch/recover)
 #   WATCH_INTERVAL         Seconds between QGA pings        (default: 5)
 #   WATCH_MISS             Missed pings before crash declared (default: 2)
-#   WATCH_REBOOT_WAIT      Seconds to wait for guest reboot  (default: 300)
 #   EVIDENCE_DIR           Output directory                  (default: /evidence)
 #
 # Build from the repository root with pinned client URLs and SHA-256 values:
@@ -36,19 +35,22 @@
 #   podman run --rm -e GA_VM=<vm> -e GA_NS=<namespace> \
 #     -e BSOD_SNAPSHOT_CLASS=<class> \
 #     -e BSOD_RECOVERY_IMAGE=<image@sha256:digest> \
-#     -v ./evidence:/evidence bsod-detector
+#     -e BSOD_MEMORY_DUMP_PVC=<filesystem-pvc> \
+#     -e BSOD_EVIDENCE_VOLUME_KIND=network -e BSOD_EVIDENCE_STORAGE_ID=<stable-id> \
+#     -v /mnt/persistent-bsod-evidence:/evidence bsod-detector
 #
 #   # Recover evidence from a hard-frozen VM
 #   podman run --rm -e MODE=recover \
-#     -v ./evidence:/evidence bsod-detector \
-#     --metadata /evidence/recovery-metadata.json
+#     -v /mnt/persistent-bsod-evidence:/evidence bsod-detector \
+#     --metadata /evidence/<run>/recovery-metadata.json --out /evidence/<run>
 #
 #   # Offline dump extraction from a disk image (original use case)
 #   podman run --rm -e MODE=extract \
 #     -v /path/to/guest.qcow2:/disk.qcow2:ro -v ./out:/out \
 #     bsod-detector --disk /disk.qcow2 --out /out
 #
-FROM registry.fedoraproject.org/fedora-minimal:41
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
 
 # ── System packages ──────────────────────────────────────────────────────────
 # libguestfs-tools : virt-copy-out / guestfish  (MODE=extract + MODE=recover PATH2)
@@ -57,6 +59,7 @@ FROM registry.fedoraproject.org/fedora-minimal:41
 # python-evtx      : offline .evtx event log parsing
 # jq               : JSON processing in all shell scripts
 # tar / curl       : oc CLI download
+COPY image/container/bsod-detector/requirements.txt /tmp/requirements.txt
 RUN <<run-EOF
 set -euxo pipefail; shopt -s inherit_errexit
 microdnf install -y \
@@ -69,7 +72,8 @@ microdnf install -y \
     curl \
     tar \
     util-linux-core
-pip3 install --no-cache-dir python-evtx
+pip3 install --no-cache-dir --require-hashes -r /tmp/requirements.txt
+rm -f /tmp/requirements.txt
 microdnf clean all
 run-EOF
 

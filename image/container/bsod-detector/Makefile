@@ -13,6 +13,7 @@ OCP_CLIENT_URL ?=
 OCP_CLIENT_SHA256 ?=
 VIRTCTL_URL ?=
 VIRTCTL_SHA256 ?=
+BASE_IMAGE ?=
 
 # Validate required variables before using them
 validate:
@@ -25,7 +26,8 @@ validate:
 	    [ -n '$(OCP_CLIENT_URL)' ] || { echo 'ERROR: OCP_CLIENT_URL is empty' >&2; exit 1; }; \
 	    [ -n '$(OCP_CLIENT_SHA256)' ] || { echo 'ERROR: OCP_CLIENT_SHA256 is empty' >&2; exit 1; }; \
 	    [ -n '$(VIRTCTL_URL)' ] || { echo 'ERROR: VIRTCTL_URL is empty' >&2; exit 1; }; \
-	    [ -n '$(VIRTCTL_SHA256)' ] || { echo 'ERROR: VIRTCTL_SHA256 is empty' >&2; exit 1; }; \
+		    [ -n '$(VIRTCTL_SHA256)' ] || { echo 'ERROR: VIRTCTL_SHA256 is empty' >&2; exit 1; }; \
+		    [[ '$(BASE_IMAGE)' =~ @sha256:[0-9a-fA-F]{64}$$ ]] || { echo 'ERROR: BASE_IMAGE must be digest-pinned' >&2; exit 1; }; \
 	    echo 'Validation passed. IMAGE_FULL=$(IMAGE_FULL)'; \
 	}
 
@@ -40,7 +42,8 @@ build: validate
 	        --build-arg 'OCP_CLIENT_URL=$(OCP_CLIENT_URL)' \
 	        --build-arg 'OCP_CLIENT_SHA256=$(OCP_CLIENT_SHA256)' \
 	        --build-arg 'VIRTCTL_URL=$(VIRTCTL_URL)' \
-	        --build-arg 'VIRTCTL_SHA256=$(VIRTCTL_SHA256)' \
+		        --build-arg 'VIRTCTL_SHA256=$(VIRTCTL_SHA256)' \
+		        --build-arg 'BASE_IMAGE=$(BASE_IMAGE)' \
 	        -f Dockerfile \
 	        '../../..'; \
 	    echo 'Successfully built: $(IMAGE_FULL)'; \
@@ -80,10 +83,11 @@ help:
 	    echo '  IMAGE_NAME      - Image name (default: $(IMAGE_NAME))'; \
 	    echo '  IMAGE_TAG       - Image tag (default: $(IMAGE_TAG))'; \
 	    echo '  OCP_CLIENT_URL / OCP_CLIENT_SHA256 - pinned OpenShift client archive'; \
-	    echo '  VIRTCTL_URL / VIRTCTL_SHA256       - pinned virtctl binary'; \
+		    echo '  VIRTCTL_URL / VIRTCTL_SHA256       - pinned virtctl binary'; \
+		    echo '  BASE_IMAGE                           - digest-pinned Fedora base image'; \
 	    echo ''; \
 	    echo 'Examples:'; \
-	    echo '  make build OCP_CLIENT_URL=<url> OCP_CLIENT_SHA256=<sha> VIRTCTL_URL=<url> VIRTCTL_SHA256=<sha>'; \
+		    echo '  make build BASE_IMAGE=<image@sha256:digest> OCP_CLIENT_URL=<url> OCP_CLIENT_SHA256=<sha> VIRTCTL_URL=<url> VIRTCTL_SHA256=<sha>'; \
 	    echo '  make push OCP_CLIENT_URL=<url> OCP_CLIENT_SHA256=<sha> VIRTCTL_URL=<url> VIRTCTL_SHA256=<sha>'; \
 	    echo '  make clean'; \
 	}

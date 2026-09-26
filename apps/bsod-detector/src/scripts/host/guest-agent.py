@@ -57,7 +57,13 @@ _resolved = False
 
 def _oc(args):
     """Run `oc <args>` and return stripped stdout, or '' on failure."""
-    r = subprocess.run(["oc"] + args, capture_output=True, text=True, check=False)
+    try:
+        r = subprocess.run(
+            ["oc", "--request-timeout=20s"] + args,
+            capture_output=True, text=True, check=False, timeout=25,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
@@ -110,11 +116,11 @@ def agent(cmd_obj, timeout=300):
     payload = json.dumps(cmd_obj)
     try:
         out = subprocess.run(
-            ["oc", "exec", "-n", NS, POD, "--",
+            ["oc", "--request-timeout=" + str(timeout) + "s", "exec", "-n", NS, POD, "--",
              "virsh", "qemu-agent-command", "--timeout", str(timeout), DOM, payload],
-            capture_output=True, text=True, check=False, timeout=timeout+30)
+            capture_output=True, text=True, check=False, timeout=timeout + 5)
     except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"oc exec timed out after {timeout+30}s: {e}")
+        raise RuntimeError(f"oc exec timed out after {timeout + 5}s: {e}")
     except Exception as e:
         raise RuntimeError(f"oc exec failed: {e}")
 
@@ -152,6 +158,34 @@ def guest_exec(path, args=None, wait=True, poll_timeout=600):
                 continue
             raise RuntimeError(f"guest-exec timed out waiting for pid {pid}: {e}")
     return {"pid": pid, "timeout": True, "message": f"waited {poll_timeout}s without exit"}
+
+
+def guest_exec_crash(path, args=None, poll_timeout=45):
+    """Start an intentional crash command and make its outcome explicit.
+
+    A reported guest exit is authoritative and its status is propagated.  A
+    transport loss after QGA confirmed process creation is the only successful
+    detached outcome; the armed watcher must still corroborate the crash.
+    """
+    launched = agent({"execute": "guest-exec", "arguments": {
+        "path": path, "arg": args or [], "capture-output": True,
+    }}, timeout=20)
+    pid = launched["pid"]
+    deadline = time.monotonic() + poll_timeout
+    while time.monotonic() < deadline:
+        try:
+            status = agent(
+                {"execute": "guest-exec-status", "arguments": {"pid": pid}},
+                timeout=5,
+            )
+        except RuntimeError as exc:
+            return {"pid": pid, "disconnected": True, "message": str(exc)}
+        if status.get("exited"):
+            out = base64.b64decode(status["out-data"]).decode("utf-8", "replace") if status.get("out-data") else ""
+            err = base64.b64decode(status["err-data"]).decode("utf-8", "replace") if status.get("err-data") else ""
+            return {"pid": pid, "exitcode": status.get("exitcode"), "stdout": out, "stderr": err}
+        time.sleep(1)
+    return {"pid": pid, "timeout": True, "message": f"crash command remained observable for {poll_timeout}s"}
 
 
 def guest_put(local, guestpath):
@@ -321,6 +355,15 @@ def main():
             print("exec-nowait requires a program", file=sys.stderr); return 2
         print(json.dumps(guest_exec(sys.argv[2], sys.argv[3:], wait=False), sort_keys=True))
         return 0
+    if cmd == "exec-crash":
+        if len(sys.argv) < 3:
+            print("exec-crash requires a program", file=sys.stderr); return 2
+        timeout = int(os.environ.get("BSOD_TRIGGER_CONFIRM_TIMEOUT", "45"))
+        result = guest_exec_crash(sys.argv[2], sys.argv[3:], poll_timeout=timeout)
+        if result.get("disconnected"):
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        return _print_exec_result(result)
     if cmd == "put":
         n = guest_put(sys.argv[2], sys.argv[3]); print(f"wrote {n} bytes -> {sys.argv[3]}"); return 0
     if cmd == "get":

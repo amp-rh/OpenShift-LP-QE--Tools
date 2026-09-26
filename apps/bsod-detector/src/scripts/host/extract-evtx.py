@@ -30,6 +30,10 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 
+class EvtxParseError(RuntimeError):
+    """The EVTX dependency or input could not be parsed safely."""
+
+
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
@@ -67,8 +71,8 @@ def extract_events_from_evtx(evtx_path, target_events):
     """
     try:
         import Evtx.Evtx as evtx
-    except ImportError:
-        return []
+    except ImportError as exc:
+        raise EvtxParseError("python-evtx is not installed") from exc
 
     matched = []
     target_ids = {e["eventId"] for e in target_events}
@@ -115,10 +119,12 @@ def extract_events_from_evtx(evtx_path, target_events):
                         "provider": provider,
                         "message": message,
                     })
-                except Exception:  # noqa: BLE001, S112  # skip malformed .evtx records
-                    continue
-    except Exception:  # noqa: BLE001  # tolerate corrupt/truncated .evtx files
-        return matched
+                except (ET.ParseError, TypeError, ValueError, AttributeError) as exc:
+                    raise EvtxParseError(f"malformed record in {evtx_path}: {exc}") from exc
+    except EvtxParseError:
+        raise
+    except Exception as exc:  # noqa: BLE001  # python-evtx exposes format-specific exceptions
+        raise EvtxParseError(f"cannot parse {evtx_path}: {exc}") from exc
 
     return matched
 
@@ -192,35 +198,38 @@ def main():
     warnings = []
 
     if not args.evtx_files:
-        json.dump({"ok": True, "crash": {"detected": False, "crashType": None},
-                   "events": [], "warnings": ["no .evtx files provided"]}, sys.stdout, indent=2)
+        json.dump({"ok": False, "error": "no .evtx files provided",
+                   "crash": {"detected": False, "crashType": None},
+                   "events": [], "warnings": []}, sys.stdout, indent=2)
         print()
-        return
+        return 1
 
     # Load data files
     bc_path = os.path.join(args.data_dir, "bugcheck-codes.json")
     es_path = os.path.join(args.data_dir, "event-sources.json")
 
-    bugcheck_codes = {}
-    if os.path.exists(bc_path):
+    try:
         bugcheck_codes = load_json(bc_path).get("codes", {})
-    else:
-        warnings.append(f"bugcheck-codes.json not found at {bc_path}")
-
-    target_events = []
-    if os.path.exists(es_path):
         target_events = load_json(es_path).get("events", [])
-    else:
-        warnings.append(f"event-sources.json not found at {es_path}")
+    except (OSError, json.JSONDecodeError) as exc:
+        json.dump({"ok": False, "error": f"cannot load parser data: {exc}",
+                   "events": [], "warnings": warnings}, sys.stdout, indent=2)
+        print()
+        return 1
 
     # Extract events from all provided .evtx files
     all_events = []
     for evtx_file in args.evtx_files:
-        if not os.path.exists(evtx_file):
-            warnings.append(f"file not found: {evtx_file}")
-            continue
-        matched = extract_events_from_evtx(evtx_file, target_events)
-        all_events.extend(matched)
+        try:
+            if not os.path.isfile(evtx_file):
+                raise EvtxParseError(f"file not found: {evtx_file}")
+            matched = extract_events_from_evtx(evtx_file, target_events)
+            all_events.extend(matched)
+        except EvtxParseError as exc:
+            json.dump({"ok": False, "error": str(exc), "events": all_events,
+                       "warnings": warnings}, sys.stdout, indent=2)
+            print()
+            return 1
 
     # Detect crash
     crash = detect_crash(all_events, bugcheck_codes)
@@ -235,7 +244,8 @@ def main():
 
     json.dump(result, sys.stdout, indent=2)
     print()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

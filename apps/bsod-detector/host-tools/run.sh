@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run.sh - run the bsod-host-tools container with the right podman mounts.
+# run.sh - run the unified bsod-detector container with the right podman mounts.
 #
 # Usage:
 #   host-tools/run.sh --disk <imgFile> [--out <outDir>]
@@ -18,7 +18,7 @@
 ####
 set -euxo pipefail; shopt -s inherit_errexit
 
-typeset image="${BSOD_HOST_IMAGE:-bsod-host-tools}"
+typeset image="${BSOD_HOST_IMAGE:-quay.io/redhatqe/bsod-detector:latest}"
 typeset here=''
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 typeset project=''

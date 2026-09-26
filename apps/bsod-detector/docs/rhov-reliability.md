@@ -1,103 +1,103 @@
 # RHOV reliability contract
 
-The automated watcher and snapshot-recovery pipeline supports OpenShift
-Virtualization/KubeVirt only. The KVM scripts remain separate development tools;
-they are not fallback paths for this pipeline. The behavior below is covered by
-fixtures and command mocks. It has not been validated against a live cluster in
-this repository change.
+The automated watcher/snapshot-recovery pipeline supports OpenShift
+Virtualization/KubeVirt only. KVM scripts are separate development tools, not
+fallbacks. This contract is covered by fixtures and command mocks; this change
+does not claim live-cluster validation.
 
 ## Required preflight state
 
-`preflight-rhov.sh` is read-only and fails before the watcher arms unless all of
-these conditions hold:
+`preflight-rhov.sh` does not alter VM lifecycle/configuration. It writes its
+unique evidence directory, stages QGA diagnostics, and creates/deletes one
+short-lived recovery-image probe pod. It fails before the watcher arms unless:
 
-- `oc`, `virtctl`, `jq`, `python3`, `sha256sum`, `findmnt`, and `timeout` exist.
-- The named `VirtualMachine` has `spec.runStrategy: Manual`. The tool reports the
-  mismatch and never patches it automatically.
-- Exactly one running VMI and virt-launcher pod match the explicit namespace and
-  VM name.
-- Exactly one Block-mode guest PVC/system disk can be selected, or the operator
-  supplies a previously verified `--disk-target`.
-- The configured CSI `VolumeSnapshotClass`, source `StorageClass`, snapshot API,
-  and required namespaced RBAC verbs are available.
-- The recovery image is supplied by immutable digest. It must contain Bash,
-  `guestfish`, and the packaged BSOD helpers.
-- The evidence directory is writable and backed by durable storage. Overlay,
-  tmpfs, and ramfs destinations are rejected. In a container, mount a PVC or
-  other persistent volume at `/evidence`.
-- QGA responds, CrashControl matches `src/data/crash-control.json`,
-  `AutoReboot=0`, the page-file check does not fail, and the Windows dump paths
-  exist. Intentional-crash preflight additionally checks the exact NotMyFault
-  executable path.
+- Required local helpers and clients exist, including `python-evtx`.
+- The named VM uses `runStrategy: Manual`; preflight never patches it.
+- Exactly one running VMI and launcher match the explicit namespace/VM.
+- Domain XML maps the selected libvirt target through its KubeVirt disk alias to
+  exactly one VMI volume and Block-mode PVC/DataVolume. An explicit target must
+  pass the same mapping and cannot select an unrelated disk.
+- Snapshot class/provisioner, snapshot API, and every required RBAC verb match.
+- A distinct Bound Filesystem PVC is supplied for KubeVirt's supported
+  `virtctl memory-dump` API, and that API exists in the pinned client.
+- The recovery image is digest-pinned. A safe pre-arm pod proves Bash and
+  `guestfish` execute. Recovery later rechecks `guestfish` and block readability.
+- `--evidence-mount` is the exact non-root mount target, its kind is explicitly
+  `pvc`, `network`, or `csi`, and it has a stable identity. `hostPath`,
+  `emptyDir`, local-node, overlay/tmpfs/ramfs, ordinary unmounted directories,
+  and output outside the mount are forbidden. PVC/CSI identities must resolve to
+  a Bound Filesystem PVC; network identities require a network filesystem. The
+  mount must also contain a pre-provisioned `.bsod-storage-identity` marker that
+  exactly matches the declared ID and is rechecked during recovery.
+- QGA responds; CrashControl matches the reviewed data; `AutoReboot=0`; page-file
+  adequacy is explicitly `true`; and Windows dump paths exist. Intentional mode
+  additionally verifies the reviewed NotMyFault executable.
 
-`configure-dumps.ps1` accepts `-DataFile`; `guest-agent.py psfile` stages that
-JSON companion explicitly. Guest process exit codes are returned to the caller,
-so an unsuccessful diagnostic cannot be mistaken for a successful preflight.
+Guest process exit codes are authoritative. Intentional crash launch uses
+`exec-crash`: an immediate guest exit is propagated, while transport loss after
+QGA confirms process creation delegates the final verdict to watcher evidence.
 
-## Detection and dump-completion rules
+## Bounded state machine
 
-The watcher uses a small, fixture-tested state machine:
+Every remote operation has a wall-clock timeout, request timeout where
+applicable, and kill-after bound. Preflight, capture, armed observation,
+quiescence, stop, recovery, and restart also have overall deadlines with
+stage-specific errors.
 
-- Below the configured QGA miss threshold it continues observing.
-- At the threshold, a current (watch-only) pvpanic event corroborates a crash.
-- Otherwise, a still-running VMI, an existing launcher, and a pod-local domain
-  state of `paused`, `crashed`, or `pmsuspended` corroborate a crash/freeze.
-- Domain state `running` with a dead QGA is still ambiguous without pvpanic; it
-  can also describe a guest-agent-only failure or control-plane impairment.
-- `unknown` or unavailable domain state is ambiguous. The watcher writes a
-  detection-stage error and exits nonzero at the threshold; it does not loop
-  from miss 2 through miss 108.
-- Missing VMI/launcher state is a control-plane failure, not crash evidence.
+The watcher publishes its atomic readiness marker only after preflight, an
+initial QGA ping, and the event watch are active. The intentional trigger waits
+for that marker with a bound before issuing any guest action.
 
-Before stopping the VMI, the watcher monitors `wr.bytes` for the selected disk
-target. It records a baseline, requires a strictly increasing counter, and only
-accepts completion after that progress is followed by the configured number of
-unchanged samples. Missing statistics, counter regression, no progress, and
-quiescence timeout are failures. In those cases the watcher preserves captured
-diagnostics and does not stop the VM.
+At the QGA miss threshold, a current watch-only pvpanic event corroborates a
+crash. Otherwise a running VMI, present launcher, and domain state `paused`,
+`crashed`, or `pmsuspended` corroborate it. `running`, `unknown`, unavailable
+state, missing VMI, or missing launcher fail closed; they are not crash proof.
 
-## Durable recovery and artifacts
+Before any long screenshot or memory capture, the watcher records the mapped
+disk's `wr.bytes` baseline and samples concurrently. It requires progress and
+then the configured number of idle samples. Missing/regressed statistics, no
+progress, and quiescence timeout preserve diagnostics but never stop the VM.
 
-Preflight writes `recovery-metadata.json` before stop. It contains the launcher,
-domain, node, PVC, disk target, snapshot/storage classes, volume mode/size, and
-digest-pinned recovery image. After `virtctl stop` confirms the VMI is absent or
-terminal, recovery uses only the PVC/snapshot fields; disappearance of the old
-launcher is expected.
+## Durable capture and recovery
 
-The recovery pod mounts the snapshot read-only as a block device. `guestfish`
-downloads each requested guest file to `/dev/stdout`, and `oc exec` streams it
-directly to a temporary file in the durable evidence directory. The pod has no
-`/out` volume and never stages dump or raw-memory files under launcher `/tmp`.
-Its only scratch space is a bounded memory-backed `/tmp` used by libguestfs.
-Cleanup deletes the recovery pod before its PVC and snapshot and is protected by
-an exit trap.
+Every attempt gets a new run ID and previously nonexistent direct child of the
+validated mount. Metadata binds that run/output identity, full mount identity,
+disk/PVC mapping, pre-crash dump inventory, arm time, snapshot fields,
+memory-dump PVC, and proven recovery-image contract. Recovery revalidates the
+same mount and output and rejects any pre-existing recovery artifact.
 
-| Artifact class | Validation before publication |
+Screenshots use `virtctl vnc screenshot --file`. Raw memory uses KubeVirt's
+memory-dump PVC API and client download; daemon-side `virsh ... /dev/stdout` is
+forbidden. After verified disk progress/quiescence, `virtctl stop` must confirm
+the VMI is offline. Recovery snapshots only the mapped system-disk PVC and uses
+a read-only block-mode clone. Guestfish client output streams directly into a
+temporary file on validated storage.
+
+Signal handlers exit 130/143. One idempotent EXIT cleanup deletes the recovery
+pod before its PVC and snapshot. No patch/delete lifecycle fallback exists.
+
+| Artifact | Publication gate |
 |---|---|
-| Screenshot | command success, nonzero size, PNG or PPM signature; extension matches format |
-| Raw VM memory | streamed directly from pod-local virsh, nonzero ELF signature |
-| `MEMORY.DMP` / minidump | command success and `PAGEDU64` or `MDMP` signature |
-| EVTX | command success and `ElfFile\0` signature |
-| Logs/JSON | nonzero or parseable, as applicable |
+| Screenshot | bounded command plus structurally valid PNG IHDR or PPM |
+| Raw VM memory | supported KubeVirt API plus structurally valid ELF header |
+| Windows dump | post-arm timestamp, differs from pre-crash inventory, and valid PAGEDU64/minidump structure |
+| EVTX | complete EVTX header and successful semantic parser result |
+| Parser JSON | parseable and `.ok == true` |
 
-Every published artifact has a byte count and SHA-256 in the generated summary.
-Recovery also writes `checksums.sha256` before deleting cluster resources.
-`stage-errors.jsonl` records stage-specific failures. Summary `ok` is derived:
-it is true only when no stage errors or invalid artifacts exist and screenshot,
-raw memory, a Windows dump, EVTX, and logs are all present. Missing files are not
-listed as artifacts. `recovery-summary.json` and `evidence-summary.json` are
-written atomically and the scripts return nonzero when their required predicate
-is false.
+Checksums and summaries are atomic. Summary predicates are mode-specific:
+standalone recovery requires only dump/EVTX/parser/log/checksum artifacts that it
+owns; the full watcher additionally requires screenshot, raw memory, and watcher
+diagnostics. Any parser failure, stage error, invalid artifact, or missing
+required class returns nonzero.
 
 ## Safe fixture validation
 
-These commands do not contact infrastructure:
+These commands contact no cluster, VM, guest, or external failure generator:
 
 ```bash
-python3 -m unittest -v apps/bsod-detector/test/test_reliability.py
+python3 -m unittest -v \
+  apps/bsod-detector/test/test_reliability.py \
+  apps/bsod-detector/test/test_evtx.py \
+  apps/bsod-detector/test/test_container_contract.py
 bats apps/bsod-detector/test/test-rhov-reliability.bats
 ```
-
-The recovery Bats test supplies an `oc` shim, snapshot/VMI fixtures, and binary
-signature fixtures. It verifies recovery after launcher disappearance, durable
-stream paths, EVTX export, cleanup order contracts, and truthful summaries.

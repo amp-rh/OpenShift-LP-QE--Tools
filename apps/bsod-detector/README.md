@@ -1999,7 +1999,7 @@ in any cluster.
 | `recover` | `recover-natural-crash.sh` | Hard-freeze evidence recovery |
 | `extract` | `extract-dump` | Original offline libguestfs dump pull |
 
-Key env vars (all have defaults except `GA_VM` / `GA_NS`):
+Key environment variables for watch mode:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -2007,18 +2007,26 @@ Key env vars (all have defaults except `GA_VM` / `GA_NS`):
 | `GA_NS` | required | Kubernetes namespace |
 | `WATCH_INTERVAL` | `5` | QGA poll interval (seconds) |
 | `WATCH_MISS` | `2` | Missed pings before crash declared |
-| `WATCH_REBOOT_WAIT` | `300` | Seconds to wait for reboot |
-| `EVIDENCE_DIR` | `/evidence` | Output directory |
+| `EVIDENCE_DIR` | `/evidence` | Exact persistent mount target; each run gets a unique child |
+| `BSOD_EVIDENCE_VOLUME_KIND` | required | `pvc`, `network`, or `csi` |
+| `BSOD_EVIDENCE_STORAGE_ID` | required | Stable identity revalidated by recovery |
+| `BSOD_SNAPSHOT_CLASS` | required | Compatible CSI snapshot class |
+| `BSOD_RECOVERY_IMAGE` | required | Digest-pinned Bash/guestfish image |
+| `BSOD_MEMORY_DUMP_PVC` | required | Dedicated Filesystem PVC for the KubeVirt memory-dump API |
 
 ```bash
 # Watch a VM (natural crash detection)
+printf '%s\n' shared-bsod-evidence > /mnt/persistent-bsod-evidence/.bsod-storage-identity
 podman run --rm -e GA_VM=win2022-vm-hjoshi1 -e GA_NS=windows-bsod \
-  -v ./evidence:/evidence quay.io/redhatqe/bsod-detector:latest
+  -e BSOD_EVIDENCE_VOLUME_KIND=network -e BSOD_EVIDENCE_STORAGE_ID=shared-bsod-evidence \
+  -e BSOD_SNAPSHOT_CLASS='<class>' -e BSOD_RECOVERY_IMAGE='<image@sha256:digest>' \
+  -e BSOD_MEMORY_DUMP_PVC='<memory-dump-pvc>' \
+  -v /mnt/persistent-bsod-evidence:/evidence quay.io/redhatqe/bsod-detector:latest
 
 # Hard-freeze recovery
 podman run --rm -e MODE=recover \
-  -e GA_VM=win2022-vm-hjoshi1 -e GA_NS=windows-bsod \
-  -v ./evidence:/evidence quay.io/redhatqe/bsod-detector:latest
+  -v /mnt/persistent-bsod-evidence:/evidence quay.io/redhatqe/bsod-detector:latest \
+  --metadata /evidence/<run-id>/recovery-metadata.json --out /evidence/<run-id>
 
 # Offline dump extraction (original behaviour unchanged)
 podman run --rm -e MODE=extract \
@@ -2026,7 +2034,10 @@ podman run --rm -e MODE=extract \
   quay.io/redhatqe/bsod-detector:latest --disk /disk.qcow2 --out /out
 
 # Build
-make -C image/container/bsod-detector build
+make -C image/container/bsod-detector build \
+  BASE_IMAGE='<image@sha256:digest>' \
+  OCP_CLIENT_URL='<url>' OCP_CLIENT_SHA256='<sha256>' \
+  VIRTCTL_URL='<url>' VIRTCTL_SHA256='<sha256>'
 ```
 
 ---

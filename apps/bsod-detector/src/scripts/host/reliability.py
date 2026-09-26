@@ -12,7 +12,10 @@ import hashlib
 import json
 import os
 import re
+import struct
 import sys
+import xml.etree.ElementTree as ET
+import zlib
 from pathlib import Path
 
 
@@ -123,32 +126,140 @@ def progress_sequence(args: argparse.Namespace) -> None:
     emit({"status": "failure", "reason": reason, **state}, 1)
 
 
+def _validate_png(path: Path) -> bool:
+    data = path.read_bytes()
+    if len(data) < 45 or not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+    offset = 8
+    seen_ihdr = False
+    while offset + 12 <= len(data):
+        length = struct.unpack_from(">I", data, offset)[0]
+        end = offset + 12 + length
+        if end > len(data):
+            return False
+        chunk_type = data[offset + 4:offset + 8]
+        payload = data[offset + 8:offset + 8 + length]
+        expected_crc = struct.unpack_from(">I", data, offset + 8 + length)[0]
+        if zlib.crc32(chunk_type + payload) & 0xFFFFFFFF != expected_crc:
+            return False
+        if not seen_ihdr:
+            if chunk_type != b"IHDR" or length != 13:
+                return False
+            width, height = struct.unpack_from(">II", payload)[0:2]
+            if width == 0 or height == 0:
+                return False
+            seen_ihdr = True
+        if chunk_type == b"IEND":
+            return length == 0 and end == len(data)
+        offset = end
+    return False
+
+
+def _validate_ppm(data: bytes) -> bool:
+    match = re.match(rb"P([36])\s+(\d+)\s+(\d+)\s+(\d+)\s", data[:256])
+    if not match:
+        return False
+    width, height, maximum = (int(value) for value in match.groups()[1:])
+    return width > 0 and height > 0 and 0 < maximum <= 65535 and len(data) > match.end()
+
+
+def _validate_elf(path: Path, data: bytes) -> bool:
+    if len(data) < 64 or data[:4] != b"\x7fELF" or data[6] != 1:
+        return False
+    elf_class, endian = data[4], data[5]
+    if elf_class not in {1, 2} or endian not in {1, 2}:
+        return False
+    order = "<" if endian == 1 else ">"
+    header_size = struct.unpack_from(order + "H", data, 0x34 if elf_class == 2 else 0x28)[0]
+    if header_size != (64 if elf_class == 2 else 52) or struct.unpack_from(order + "H", data, 0x10)[0] != 4:
+        return False
+    if elf_class == 2:
+        program_offset = struct.unpack_from(order + "Q", data, 0x20)[0]
+        entry_size, count = struct.unpack_from(order + "HH", data, 0x36)
+    else:
+        program_offset = struct.unpack_from(order + "I", data, 0x1C)[0]
+        entry_size, count = struct.unpack_from(order + "HH", data, 0x2A)
+    if count == 0 or entry_size < (56 if elf_class == 2 else 32) or count > 65535:
+        return False
+    table_size = entry_size * count
+    if program_offset < header_size or program_offset + table_size > path.stat().st_size or table_size > 16 * 1024 * 1024:
+        return False
+    with path.open("rb") as stream:
+        stream.seek(program_offset)
+        table = stream.read(table_size)
+    maximum = program_offset + table_size
+    for index in range(count):
+        entry = table[index * entry_size:(index + 1) * entry_size]
+        if elf_class == 2:
+            file_offset = struct.unpack_from(order + "Q", entry, 8)[0]
+            file_size = struct.unpack_from(order + "Q", entry, 32)[0]
+        else:
+            file_offset = struct.unpack_from(order + "I", entry, 4)[0]
+            file_size = struct.unpack_from(order + "I", entry, 16)[0]
+        maximum = max(maximum, file_offset + file_size)
+    if maximum > path.stat().st_size:
+        return False
+    with path.open("rb") as stream:
+        stream.seek(maximum)
+        trailing = stream.read()
+    return not trailing or all(byte == 0 for byte in trailing)
+
+
+def _validate_dump(path: Path, data: bytes) -> tuple[bool, str]:
+    if data.startswith(b"PAGEDU64"):
+        return path.stat().st_size >= 0x2000, "windows-pagedu64"
+    if data.startswith(b"MDMP"):
+        if len(data) < 32:
+            return False, "windows-minidump"
+        stream_count, directory_rva = struct.unpack_from("<II", data, 8)
+        directory_end = directory_rva + stream_count * 12
+        if not (stream_count > 0 and 32 <= directory_rva and directory_end <= path.stat().st_size):
+            return False, "windows-minidump"
+        with path.open("rb") as stream:
+            stream.seek(directory_rva)
+            directory = stream.read(stream_count * 12)
+        maximum = directory_end
+        for index in range(stream_count):
+            data_size, rva = struct.unpack_from("<II", directory, index * 12 + 4)
+            maximum = max(maximum, rva + data_size)
+        if maximum > path.stat().st_size:
+            return False, "windows-minidump"
+        with path.open("rb") as stream:
+            stream.seek(maximum)
+            trailing = stream.read()
+        return (not trailing or all(byte == 0 for byte in trailing)), "windows-minidump"
+    return False, "unknown"
+
+
+def _validate_evtx(data: bytes) -> bool:
+    if len(data) < 4096 or not data.startswith(b"ElfFile\x00"):
+        return False
+    header_size = struct.unpack_from("<I", data, 0x78)[0]
+    return header_size == 4096
+
+
 def artifact_type(path: Path, requested: str) -> tuple[bool, str]:
     with path.open("rb") as stream:
-        data = stream.read(16)
+        data = stream.read(4096)
     if requested == "screenshot":
         if data.startswith(b"\x89PNG\r\n\x1a\n"):
-            return True, "png"
-        if data.startswith((b"P6\n", b"P3\n", b"P6 ", b"P3 ")):
-            return True, "ppm"
+            return _validate_png(path), "png"
+        if data.startswith((b"P6", b"P3")):
+            return _validate_ppm(data), "ppm"
         return False, "unknown"
     if requested == "memory":
-        return data.startswith(b"\x7fELF"), "elf"
+        return _validate_elf(path, data), "elf"
     if requested == "dump":
-        if data.startswith(b"PAGEDU64"):
-            return True, "windows-pagedu64"
-        if data.startswith(b"MDMP"):
-            return True, "windows-minidump"
-        return False, "unknown"
+        return _validate_dump(path, data)
     if requested == "evtx":
-        return data.startswith(b"ElfFile\x00"), "evtx"
+        return _validate_evtx(data), "evtx"
     if requested == "json":
         try:
             json.loads(path.read_text(encoding="utf-8"))
             return True, "json"
         except (json.JSONDecodeError, UnicodeDecodeError):
             return False, "invalid-json"
-    return bool(data), "text"
+    return bool(data) and b"\x00" not in data[:4096], "text"
 
 
 def sha256_file(path: Path) -> str:
@@ -195,6 +306,22 @@ def classify(path: Path) -> str | None:
     return None
 
 
+REQUIRED_TYPES = {
+    "natural-rhov": {"screenshot", "memory", "dump", "evtx", "log", "json", "checksums"},
+    "intentional-rhov": {"screenshot", "memory", "dump", "evtx", "log", "json", "checksums"},
+    "rhov-snapshot-recovery": {"dump", "evtx", "log", "json", "checksums"},
+    "fixture": {"screenshot", "memory", "dump", "evtx", "log"},
+}
+
+
+SEMANTIC_RESULTS = {"parse-dump-header.json", "events.json"}
+REQUIRED_RESULT_FILES = {
+    "natural-rhov": SEMANTIC_RESULTS,
+    "intentional-rhov": SEMANTIC_RESULTS,
+    "rhov-snapshot-recovery": SEMANTIC_RESULTS,
+}
+
+
 def write_summary(args: argparse.Namespace) -> None:
     out = Path(args.out).resolve()
     stage_errors: list[dict] = []
@@ -210,7 +337,11 @@ def write_summary(args: argparse.Namespace) -> None:
 
     artifacts: list[dict] = []
     invalid: list[dict] = []
-    found = {"screenshot": 0, "memory": 0, "dump": 0, "evtx": 0, "log": 0}
+    required = REQUIRED_TYPES.get(args.mode)
+    if required is None:
+        stage_errors.append({"stage": "summary", "error": f"unknown summary mode: {args.mode}"})
+        required = set()
+    found = {kind: 0 for kind in required}
     excluded = {"evidence-summary.json", "recovery-summary.json"}
     for path in sorted(out.rglob("*")):
         if not path.is_file() or path.name in excluded or path == stage_file:
@@ -219,6 +350,12 @@ def write_summary(args: argparse.Namespace) -> None:
         if kind is None:
             continue
         valid, detected = artifact_type(path, kind)
+        semantic_error = None
+        if valid and path.name in SEMANTIC_RESULTS:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if value.get("ok") is not True:
+                valid = False
+                semantic_error = "stage-result-reports-failure"
         record = {
             "path": str(path.relative_to(out)),
             "type": kind,
@@ -227,18 +364,25 @@ def write_summary(args: argparse.Namespace) -> None:
             "sha256": sha256_file(path),
             "valid": valid,
         }
+        if semantic_error:
+            record["error"] = semantic_error
         artifacts.append(record)
         if valid and kind in found:
             found[kind] += 1
         if not valid:
             invalid.append(record)
-    missing = [kind for kind, count in found.items() if count == 0]
+    missing = sorted(kind for kind, count in found.items() if count == 0)
+    artifact_paths = {item["path"] for item in artifacts}
+    for filename in sorted(REQUIRED_RESULT_FILES.get(args.mode, set())):
+        if filename not in artifact_paths:
+            missing.append(f"json:{filename}")
     ok = not stage_errors and not invalid and not missing
     summary = {
         "ok": ok,
         "mode": args.mode,
         "vm": args.vm,
         "namespace": args.namespace,
+        "runId": args.run_id,
         "artifacts": artifacts,
         "stageErrors": stage_errors,
         "invalidArtifacts": invalid,
@@ -250,6 +394,45 @@ def write_summary(args: argparse.Namespace) -> None:
     os.replace(temporary, target)
     print(json.dumps(summary, sort_keys=True))
     raise SystemExit(0 if ok else 1)
+
+
+def map_disk(args: argparse.Namespace) -> None:
+    try:
+        vmi = json.loads(Path(args.vmi_json).read_text(encoding="utf-8"))
+        root = ET.parse(args.domain_xml).getroot()
+    except (OSError, json.JSONDecodeError, ET.ParseError) as exc:
+        emit({"ok": False, "error": f"invalid mapping input: {exc}"}, 1)
+
+    targets: dict[str, str] = {}
+    for disk in root.findall(".//devices/disk"):
+        target = disk.find("target")
+        alias = disk.find("alias")
+        if target is None or alias is None:
+            continue
+        device = target.get("dev", "")
+        alias_name = alias.get("name", "")
+        if alias_name.startswith("ua-") and device:
+            targets[device] = alias_name[3:]
+
+    volumes = {item.get("name"): item for item in vmi.get("spec", {}).get("volumes", [])}
+    candidates = []
+    for target, disk_name in targets.items():
+        if args.target and target != args.target:
+            continue
+        volume = volumes.get(disk_name, {})
+        claim = (volume.get("persistentVolumeClaim") or {}).get("claimName")
+        claim = claim or (volume.get("dataVolume") or {}).get("name")
+        if claim:
+            candidates.append({"diskTarget": target, "diskName": disk_name, "guestPvc": claim})
+
+    if len(candidates) != 1:
+        emit({
+            "ok": False,
+            "error": "disk target does not map uniquely to a PVC/DataVolume",
+            "requestedTarget": args.target or None,
+            "candidates": candidates,
+        }, 1)
+    emit({"ok": True, **candidates[0]})
 
 
 def parser() -> argparse.ArgumentParser:
@@ -292,7 +475,14 @@ def parser() -> argparse.ArgumentParser:
     summary.add_argument("--vm", required=True)
     summary.add_argument("--namespace", required=True)
     summary.add_argument("--filename", default="evidence-summary.json")
+    summary.add_argument("--run-id", default="")
     summary.set_defaults(func=write_summary)
+
+    mapping = commands.add_parser("map-disk")
+    mapping.add_argument("--vmi-json", required=True)
+    mapping.add_argument("--domain-xml", required=True)
+    mapping.add_argument("--target", default="")
+    mapping.set_defaults(func=map_disk)
     return result
 
 
