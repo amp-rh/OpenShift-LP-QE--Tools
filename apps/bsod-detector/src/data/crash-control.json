@@ -10,9 +10,9 @@
     "automatic": { "CrashDumpEnabled": 7, "description": "Automatic memory dump (Win8+): like kernel dump but lets the OS manage page-file sizing." }
   },
   "recommended": {
-    "crashDumpType": "kernel",
+    "crashDumpType": "automatic",
     "values": {
-      "CrashDumpEnabled": 2,
+      "CrashDumpEnabled": 7,
       "AlwaysKeepMemoryDump": 1,
       "Overwrite": 1,
       "LogEvent": 1,
@@ -20,7 +20,7 @@
       "MinidumpDir": "%SystemRoot%\\Minidump",
       "DumpFile": "%SystemRoot%\\MEMORY.DMP"
     },
-    "notes": "CrashDumpEnabled=2 (kernel dump) writes a single MEMORY.DMP in %SystemRoot%, overwritten on each crash (Overwrite=1). MinidumpDir is only used when CrashDumpEnabled=3 (small dump), which writes individual ~64KB minidumps per crash. Both are included here for documentation; the active setting (2) produces MEMORY.DMP only. AlwaysKeepMemoryDump=1 stops Windows from deleting MEMORY.DMP on low disk. AutoReboot=0 keeps the guest at the crash screen so Windows completes writing MEMORY.DMP (IoWriteCrashDump) before the host stops the VM and extracts dumps offline. Without this, pvpanic fires BEFORE the dump write finishes, and an automatic reboot races with the dump, risking a truncated or missing MEMORY.DMP."
+    "notes": "CrashDumpEnabled=7 (automatic dump, Win8+) writes both MEMORY.DMP (~kernel pages) and Minidump\\*.dmp (~600KB each) from a single crash. AutoReboot=1 — VM reboots after writing dumps so QGA comes back online and pulls evidence via guest-agent.py. AlwaysKeepMemoryDump=1 stops Windows from deleting MEMORY.DMP on low disk."
   },
   "pageFile": {
     "path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management",

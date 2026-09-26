@@ -83,6 +83,7 @@ typeset warnings=()
 typeset path1Ok=false
 typeset path2Ok=false
 typeset dumpsFound=()
+typeset bugCheck=""
 
 # ─── Resolve virt-launcher pod ───────────────────────────────────────────────
 log "Resolving virt-launcher pod for $vm in $ns..."
@@ -181,12 +182,30 @@ EOF
   done
   [[ "$ready" == "true" ]] || { log_warn "Snapshot not ready after 180s"; warnings+=("PATH2: snapshot not ready"); return; }
 
+  # Patch VolumeSnapshotContent to allow volume mode change.
+  # Required for CSI Ceph RBD: without this annotation the provisioner
+  # rejects PVC creation from snapshot with "does not have permission to
+  # change volume mode" error and the PVC stays Pending indefinitely.
+  typeset snapContent; snapContent="$(oc get volumesnapshot "$snapName" -n "$ns" \
+    -o jsonpath='{.status.boundVolumeSnapshotContentName}' 2>/dev/null)"
+  if [[ -n "$snapContent" ]]; then
+    oc patch volumesnapshotcontent "$snapContent" --type merge \
+      -p '{"metadata":{"annotations":{"snapshot.storage.kubernetes.io/allow-volume-mode-change":"true"}}}' \
+      >/dev/null 2>&1 && log_ok "Patched VolumeSnapshotContent: $snapContent" || \
+      log_warn "Could not patch VolumeSnapshotContent — PVC may stay Pending"
+  fi
+
   # Get snapshot size for PVC
   typeset snapSize; snapSize="$(oc get pvc "$guestPvc" -n "$ns" \
     -o jsonpath='{.spec.resources.requests.storage}' 2>/dev/null || echo "128Gi")"
 
   # ── 2b: Create PVC from snapshot ────────────────────────────────────────
-  log "  [2b] Creating recovery PVC from snapshot ($snapSize)..."
+  # IMPORTANT: volumeMode must be Block — the source is a raw KubeVirt disk
+  # (not a filesystem). Using Filesystem mode causes mount to fail with
+  # "exit status 32" because the content is raw disk partitions (NTFS).
+  # Block mode exposes the raw device to the libguestfs pod as /dev/disk-pvc
+  # which virt-copy-out can read directly.
+  log "  [2b] Creating recovery PVC (Block mode) from snapshot ($snapSize)..."
   oc apply -f - <<EOF
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -199,6 +218,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  volumeMode: Block
   storageClassName: ocs-storagecluster-ceph-rbd-virtualization
   resources:
     requests:
@@ -209,10 +229,10 @@ spec:
     apiGroup: snapshot.storage.k8s.io
 EOF
 
-  # Wait for PVC to bind
-  log "  Waiting for recovery PVC to bind..."
+  # Wait for PVC to bind — Ceph RBD from snapshot can take 3-5 min
+  log "  Waiting for recovery PVC to bind (up to 5 min)..."
   t=0
-  while [[ $t -lt 120 ]]; do
+  while [[ $t -lt 300 ]]; do
     typeset phase; phase="$(oc get pvc "$snapPvc" -n "$ns" \
       -o jsonpath='{.status.phase}' 2>/dev/null)"
     if [[ "$phase" == "Bound" ]]; then
@@ -224,7 +244,14 @@ EOF
   [[ "$phase" == "Bound" ]] || { log_warn "Recovery PVC not bound"; warnings+=("PATH2: recovery PVC not bound"); return; }
 
   # ── 2c: Run libguestfs recovery pod ─────────────────────────────────────
-  log "  [2c] Launching libguestfs recovery pod..."
+  # Image: registry.fedoraproject.org/fedora-minimal:41 — same base as our
+  # image/container/bsod-detector/Dockerfile. libguestfs-tools-c is installed
+  # at pod startup (microdnf). Avoids needing a pre-built/pushed private image.
+  #
+  # PVC is Block mode — exposed as /dev/disk-pvc (raw block device).
+  # virt-copy-out reads it directly as a disk image without a filesystem mount.
+  # privileged: true is required for libguestfs KVM backend inside a container.
+  log "  [2c] Launching libguestfs recovery pod (fedora-minimal + libguestfs-tools-c)..."
   oc apply -f - <<EOF
 apiVersion: v1
 kind: Pod
@@ -236,47 +263,63 @@ metadata:
     target-vm: ${vm}
 spec:
   restartPolicy: Never
+  securityContext:
+    runAsNonRoot: false
   containers:
   - name: extractor
-    image: quay.io/rhsysdeseng/libguestfs-tools:latest
+    image: registry.fedoraproject.org/fedora-minimal:41
     command: ["/bin/bash", "-c"]
+    securityContext:
+      privileged: true
+      allowPrivilegeEscalation: true
+    env:
+    - name: LIBGUESTFS_BACKEND
+      value: direct
     args:
     - |
       set -euo pipefail
+      echo "=== Installing libguestfs-tools-c ==="
+      microdnf install -y libguestfs-tools-c qemu-img 2>&1 | tail -5
       echo "=== libguestfs dump extractor ==="
-      DISK=\$(ls /dev/vd? /dev/sda /dev/xvda 2>/dev/null | head -1 || true)
-      if [[ -z "\$DISK" ]]; then
-        echo "ERROR: no disk device found"
-        ls /dev/
+
+      DISK=/dev/disk-pvc
+      if [[ ! -b "\$DISK" ]]; then
+        echo "ERROR: block device \$DISK not found"
+        ls -la /dev/disk* 2>/dev/null || true
         exit 1
       fi
-      echo "Using disk: \$DISK"
+      echo "Using block device: \$DISK"
 
       mkdir -p /out/Minidump
 
       echo "--- Extracting MEMORY.DMP ---"
-      virt-copy-out -a "\$DISK" "/Windows/MEMORY.DMP" /out/ 2>/dev/null \
-        && echo "MEMORY.DMP extracted" \
+      virt-copy-out -a "\$DISK" "/Windows/MEMORY.DMP" /out/ \
+        && echo "MEMORY.DMP extracted: \$(du -sh /out/MEMORY.DMP | cut -f1)" \
         || echo "MEMORY.DMP not found (may not have been written)"
 
       echo "--- Extracting Minidump ---"
-      virt-copy-out -a "\$DISK" "/Windows/Minidump" /out/ 2>/dev/null \
+      virt-copy-out -a "\$DISK" "/Windows/Minidump" /out/ \
         && echo "Minidump extracted" \
         || echo "Minidump directory empty or not found"
+
+      echo "--- Extracting Event Logs ---"
+      mkdir -p /out/winevt
+      virt-copy-out -a "\$DISK" "/Windows/System32/winevt/Logs/System.evtx"      /out/winevt/ 2>/dev/null || true
+      virt-copy-out -a "\$DISK" "/Windows/System32/winevt/Logs/Application.evtx" /out/winevt/ 2>/dev/null || true
 
       echo "--- Extracted files ---"
       find /out -type f | xargs ls -lh 2>/dev/null || true
       echo "=== DONE ==="
-    volumeMounts:
+    volumeDevices:
     - name: guest-disk
-      mountPath: /mnt/guest
+      devicePath: /dev/disk-pvc
     resources:
       requests:
         cpu: 500m
         memory: 512Mi
       limits:
         cpu: 2000m
-        memory: 2Gi
+        memory: 4Gi
   volumes:
   - name: guest-disk
     persistentVolumeClaim:

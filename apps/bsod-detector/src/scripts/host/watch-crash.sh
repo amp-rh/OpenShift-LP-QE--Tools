@@ -1,68 +1,78 @@
 #!/usr/bin/env bash
 #
-# watch-crash.sh -- watch a KubeVirt Windows VM for a NATURAL BSOD/freeze and
-# auto-capture evidence. NO trigger is used: this is for crashes that happen on
-# their own (e.g. the Intel split-lock #AC during the Hyper-V enlightened
-# TLB-flush hypercall -> HYPERVISOR_ERROR 0x00020001), so NotMyFault / the 0xEF
-# trigger are NOT needed.
+# watch-crash.sh -- watch a KubeVirt/RHOV Windows VM for a NATURAL BSOD/freeze and
+# auto-capture evidence without writing anything to the OCP node that hosts the
+# virt-launcher pod.
 #
-# It polls the qemu-guest-agent. When the guest stops answering while the domain
-# is still alive (domstate running/paused/crashed/pmsuspended -- pvpanic can move a
-# bugcheck out of 'running') -- the classic BSOD/hang signature -- it immediately:
-#   1. bursts `virsh screenshot` from the virt-launcher pod to catch the blue screen,
-#   2. captures HOST-side signals (worker-node kernel log + domain XML) and runs
-#      collect-host-signals.sh -- this is the ONLY place a TLB-flush/HYPERVISOR_ERROR
-#      is visible; it never appears in the guest dump,
-#   3. waits for the guest to reboot; if it does, runs collect-guest.ps1, pulls the
-#      minidump, and cross-checks it offline with parse-dump-header.sh; if it stays
-#      frozen (common for HYPERVISOR_ERROR), it records that and stops.
+# Crash detection uses two complementary signals:
+#   1. QGA ping timeout  -- fast, catches any QGA death (works on all KubeVirt versions)
+#   2. pvpanic K8s event -- authoritative, emitted by KubeVirt >= v1.8.0 when the
+#      pvpanic device fires inside the guest (requires pvpanic in the VM spec)
+# Either signal alone is sufficient; both together eliminate false negatives.
 #
-# Everything lands in one evidence directory, tied together by evidence-summary.json
-# (crashDetected, guestRebooted/hardFreeze, bugCheck, splitLockDetected). Uses the
-# qemu-guest-agent (no SSH).
+# On crash detection the script immediately:
+#   1. Takes a BSOD screenshot via `virtctl screenshot` (writes locally, not to node).
+#   2. Captures VM RAM via `virsh dump --memory-only --format raw` piped via oc exec stdout to local evidence (no node writes).
+#   3. Captures host-side signals (worker-node dmesg + domain XML) for split-lock
+#      #AC analysis -- the ONLY place a HYPERVISOR_ERROR is visible.
+#   4. Waits for I/O quiescence (disk write bytes stop increasing) -- indicates
+#      Windows has finished writing MEMORY.DMP/Minidump before the VM is stopped.
+#   5. Stops the VM via `virtctl stop`.
+#   6. Triggers offline dump extraction via ODF VolumeSnapshot -> libguestfs pod
+#      (recover-natural-crash.sh --path2-only).
+#   7. Parses dump headers offline (parse-dump-header.sh) and writes evidence-summary.json.
+#   8. Restarts the VM via `virtctl start` (ready for next test iteration).
 #
-# Requires: oc, python3, jq, and (same dir) guest-agent.py, collect-host-signals.sh,
-#           parse-dump-header.sh. The toolkit must already be staged in the guest
-#           (stage-toolkit.ps1) for the collect-guest step.
+# AutoReboot=0 MUST be set in the guest CrashControl registry (configure-dumps.ps1
+# default). This lets Windows complete writing MEMORY.DMP before the I/O quiescence
+# detection fires and the VM is stopped. Without it, an automatic reboot races with
+# the dump write and can produce a truncated dump.
 #
-# --ns/--vm are OPTIONAL: with a single VMI on the cluster they are auto-detected;
-# pass them only to disambiguate. Nothing is tied to a particular VM.
+# runStrategy: Manual MUST be set in the KubeVirt VM spec so KubeVirt itself does
+# not restart the VMI when it stops. Without it, KubeVirt may restart the VM before
+# the dump has been extracted from the PVC.
+#
+# Requires: oc, virtctl, python3, jq, and (same dir) guest-agent.py,
+#           collect-host-signals.sh, parse-dump-header.sh, recover-natural-crash.sh.
+#
+# --ns/--vm are OPTIONAL: with a single VMI on the cluster they are auto-detected.
 #
 # Usage:
 #   export KUBECONFIG=<path>
 #   watch-crash.sh [--ns <ns>] [--vm <name>] [--out <dir>]
 #                  [--interval <secs>] [--miss <count>] [--node <worker>]
-#                  [--reboot-wait <secs>]
+#                  [--quiesce-wait <secs>] [--no-restart]
 #
 ####
 set -euxo pipefail
 shopt -s inherit_errexit
 exec {BASH_XTRACEFD}>/dev/null
 
-typeset ns=""                # namespace; auto-detected from the VMI when not given
-typeset vm=""                # VM name; auto-detected if there is exactly one VMI (in $ns if set)
+typeset ns=""
+typeset vm=""
 typeset outDir=""
-typeset interval=5            # seconds between health polls
-typeset miss=3               # consecutive missed pings (while domain 'running') => crash
-typeset node=""              # worker node for the kernel log; auto-detected if empty
-typeset rebootWait=300      # seconds to wait for the guest agent to return after a crash
-typeset burst=25             # screenshot frames to grab across the blue-screen window
-typeset ssMin=8000          # screenshot size band (bytes): floor excludes ~3KB DPMS-black frames
-typeset ssMax=400000        # ceiling excludes ~874KB desktop/lock frames; blue screen sits ~36KB
+typeset interval=5
+typeset miss=2
+typeset node=""
+typeset quiesceWait=900   # max seconds to wait for I/O quiescence (dump write)
+typeset noRestart=0       # set 1 via --no-restart to skip virtctl start after collection
 
 typeset scriptDir=''
 scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --ns) ns="$2"; shift 2;;
-    --vm) vm="$2"; shift 2;;
-    --out) outDir="$2"; shift 2;;
-    --interval) interval="$2"; shift 2;;
-    --miss) miss="$2"; shift 2;;
-    --node) node="$2"; shift 2;;
-    --reboot-wait) rebootWait="$2"; shift 2;;
-    --burst) burst="$2"; shift 2;;
+    --ns)            ns="$2";          shift 2;;
+    --vm)            vm="$2";          shift 2;;
+    --out)           outDir="$2";      shift 2;;
+    --interval)      interval="$2";    shift 2;;
+    --miss)          miss="$2";        shift 2;;
+    --node)          node="$2";        shift 2;;
+    --quiesce-wait)  quiesceWait="$2"; shift 2;;
+    --no-restart)    noRestart=1;      shift;;
+    # legacy compat
+    --reboot-wait)   shift 2;;
+    --burst)         shift 2;;
     -h|--help) sed -n '/^#!/,/^####$/{/^#!/d;/^####$/d;s/^# \{0,1\}//p;}' "$0"; exit 0;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
@@ -71,90 +81,220 @@ done
 [ -n "${outDir}" ] || outDir="./output/natural-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "${outDir}"
 
-# Resolve the target from the cluster so nothing is tied to one VM. Explicit
-# --ns/--vm always win; only the missing pieces are looked up. Lists "<ns> <vm>"
-# rows scoped to --ns if given, else cluster-wide, then optionally filtered by --vm.
+# ── Resolve target VM from cluster ────────────────────────────────────────────
 if [ -z "${vm}" ] || [ -z "${ns}" ]; then
   typeset -a scope=(-A); [ -n "${ns}" ] && scope=(-n "${ns}")
   typeset -a rows=()
   mapfile -t rows < <(oc get vmi "${scope[@]}" \
-    -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name}{"\n"}{end}' 2>/dev/null | sed '/^$/d')
+    -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name}{"\n"}{end}' \
+    2>/dev/null | sed '/^$/d')
   [ -n "${vm}" ] && mapfile -t rows < <(printf '%s\n' "${rows[@]}" | awk -v v="${vm}" '$2==v')
   case "${#rows[@]}" in
     1) read -r ns vm <<<"${rows[0]}"; echo "auto-detected target: ns=${ns} vm=${vm}" >&2;;
     0) echo "ERROR: no matching VMI found; pass --ns <ns> --vm <name>" >&2; exit 1;;
-    *) echo "ERROR: ambiguous target; pass --ns and/or --vm. Candidates:" >&2
+    *) echo "ERROR: ambiguous; pass --ns and/or --vm. Candidates:" >&2
        printf '  %s\n' "${rows[@]}" >&2; exit 1;;
   esac
 fi
 
-typeset podRaw=''
-podRaw="$(oc get pod -n "${ns}" -o name 2>/dev/null)" || true
+# Resolve virt-launcher pod (needed only for virsh domstats + dumpxml — not for
+# screenshots or memory dumps which use virtctl and write nothing to the node).
 typeset pod=''
-pod="$(printf '%s\n' "${podRaw}" | sed -n "/virt-launcher-${vm}-/p" | head -n1 | cut -d/ -f2)"
+pod="$(oc get pod -n "${ns}" -o name 2>/dev/null \
+       | sed -n "/virt-launcher-${vm}-/p" | head -1 | cut -d/ -f2)"
 [ -n "${pod}" ] || { echo "ERROR: no virt-launcher pod for ${vm} in ${ns}" >&2; exit 1; }
 typeset dom="${ns}_${vm}"
 export GA_NS="${ns}" GA_POD="${pod}" GA_DOM="${dom}"
 
-# log — print a timestamped diagnostic message to stdout.
-function log () { echo "[$(date -u +%H:%M:%S)] $*"; true; }
-# ga — invoke the guest-agent.py helper with the given arguments.
-function ga () { python3 "${scriptDir}/guest-agent.py" "$@"; }
-# ping_ok — return 0 if the qemu-guest-agent responds to a ping within 10s.
-# The 10s bash-level timeout ensures that if the guest crashes mid-virsh-call
-# (orphaned QGA socket), the ping fails fast instead of blocking for 300s.
+# ── Helper functions ───────────────────────────────────────────────────────────
+function log ()     { echo "[$(date -u +%H:%M:%S)] $*"; true; }
+function ga ()      { python3 "${scriptDir}/guest-agent.py" "$@"; }
+# ping_ok — QGA liveness check; 10s bash-level timeout prevents blocking on dead socket.
 function ping_ok () { timeout 10 python3 "${scriptDir}/guest-agent.py" ping >/dev/null 2>&1; }
-# domstate — query the libvirt domain state inside the virt-launcher pod.
+# domstate — domain state via virsh (exec into pod; no file writes on node).
 function domstate () { oc exec -n "${ns}" "${pod}" -- virsh domstate "${dom}" 2>/dev/null | tr -d '[:space:]'; }
+# is_crash_state — running/paused/crashed/pmsuspended all indicate a crash; shutoff does not.
+function is_crash_state () { case "$1" in running|paused|crashed|pmsuspended) return 0;; *) return 1;; esac; }
 
-# capture_screens <dst> — burst-capture VM framebuffer frames and select the BSOD frame.
-function capture_screens () {
-  typeset dst="$1"; mkdir -p "${dst}"
-  oc exec -n "${ns}" "${pod}" -- bash -c "
-    mkdir -p /tmp/wsnap; rm -f /tmp/wsnap/*
-    for i in \$(seq -w 1 ${burst}); do
-      virsh screenshot ${dom} /tmp/wsnap/s_\$i.ppm >/dev/null 2>&1 || true
-      sleep 1
-    done" >/dev/null 2>&1 || true
-  oc cp "${ns}/${pod}:/tmp/wsnap" "${dst}" >/dev/null 2>&1 || true
-  # BSOD frames are a solid colour + text => they compress SMALL (~36KB) while the
-  # desktop/lock screen is ~874KB and a DPMS-asleep display is a ~3KB solid black.
-  # Pick the SMALLEST frame INSIDE the [ssMin,ssMax] band: that isolates the blue
-  # screen from both the black (too small) and the desktop (too big) frames.
-  typeset best='' bestSz=$((ssMax + 1))
-  typeset sz=''
-  shopt -s nullglob
-  for f in "${dst}"/wsnap/*.ppm; do
-    sz=$(stat -c%s "${f}")
-    if [ "${sz}" -ge "${ssMin}" ] && [ "${sz}" -le "${ssMax}" ] && [ "${sz}" -lt "${bestSz}" ]; then bestSz="${sz}"; best="${f}"; fi
+# ── capture_screenshot — single BSOD frame via virtctl (no writes to OCP node) ──
+# virtctl screenshot writes the PNG directly to stdout/local file, bypassing the
+# virt-launcher pod entirely. No oc exec, no /tmp writes on the node.
+function capture_screenshot () {
+  log "capturing BSOD screenshot ..."
+  # Try virtctl screenshot first (no oc exec, no writes to OCP node)
+  if command -v virtctl >/dev/null 2>&1; then
+    if virtctl screenshot "${vm}" -n "${ns}" \
+        > "${outDir}/bsod-screenshot.png" 2>/dev/null && \
+        [ -s "${outDir}/bsod-screenshot.png" ]; then
+      log "bsod-screenshot.png via virtctl ($(du -sh "${outDir}/bsod-screenshot.png" | cut -f1))"
+      return 0
+    fi
+    log "virtctl screenshot unavailable — falling back to virsh screenshot via pod"
+  fi
+  # Fallback: virsh screenshot burst via oc exec (writes to pod /tmp only, not node FS)
+  # We pipe stdout directly — no files written to the OCP node's filesystem.
+  typeset dst="${outDir}/wsnap"; mkdir -p "${dst}"
+  typeset best='' bestSz=0
+  for i in $(seq -w 1 5); do
+    oc exec -n "${ns}" "${pod}" -- \
+      virsh screenshot "${dom}" /dev/stdout 2>/dev/null \
+      > "${dst}/s_${i}.ppm" || true
+    sleep 1
   done
-  if [ -n "${best}" ]; then
-    cp "${best}" "${dst}/bsod-screenshot.png"
-    log "likely blue screen: $(basename "${best}") (${bestSz}B) -> bsod-screenshot.png"
+  # Select BSOD frame by size band (8KB-400KB = blue screen)
+  typeset ssMin=8000 ssMax=400000
+  for f in "${dst}"/s_*.ppm; do
+    [[ -f "${f}" ]] || continue
+    typeset sz; sz=$(stat -c%s "${f}" 2>/dev/null || echo 0)
+    if [[ $sz -ge $ssMin && $sz -le $ssMax && $sz -gt $bestSz ]]; then
+      bestSz=$sz; best="${f}"
+    fi
+  done
+  if [[ -n "${best}" ]]; then
+    cp "${best}" "${outDir}/bsod-screenshot.png"
+    log "bsod-screenshot.png via virsh (${bestSz}B)"
   else
-    log "no frame in the ${ssMin}-${ssMax}B band; guest display may have been black (DPMS) or no blue screen captured."
+    log "no BSOD frame captured in size band ${ssMin}-${ssMax}B"
   fi
   true
 }
 
-# capture_host_signals — collect host kernel log and domain XML for split-lock #AC analysis.
+# ── capture_vm_memory — VM RAM dump via virsh dump piped to stdout ────────────
+# Immediately captures the frozen VM's RAM as a raw backup artifact.
+# Uses virsh dump --memory-only --format raw inside the virt-launcher pod,
+# piping /dev/stdout directly to the local evidence directory.
+# Nothing is written to the OCP node filesystem — data flows via oc exec stdout.
+# Raw format is delivered as-is; developer handles elf2dmp conversion offline
+# with their own matching PDB version (Finding 5 of architectural review).
+function capture_vm_memory () {
+  typeset dumpFile="${outDir}/vm-memory.raw"
+  log "capturing VM RAM via virsh dump (raw) → stdout → ${dumpFile} ..."
+  oc exec -n "${ns}" "${pod}" -- \
+    virsh dump --memory-only --format raw "${dom}" /dev/stdout 2>/dev/null \
+    > "${dumpFile}" || true
+  if [[ -s "${dumpFile}" ]]; then
+    log "VM RAM captured: ${dumpFile} ($(du -sh "${dumpFile}" | cut -f1))"
+    log "Analyze with: elf2dmp vm-memory.raw vm-memory.dmp (use matching PDBs offline)"
+  else
+    log "virsh dump failed or returned empty — raw memory backup not captured"
+    rm -f "${dumpFile}"
+  fi
+  true
+}
+
+# ── capture_host_signals — kernel log + domain XML (no node file writes) ──
 function capture_host_signals () {
-  [ -n "${node}" ] || node="$(oc get vmi "${vm}" -n "${ns}" -o jsonpath='{.status.nodeName}' 2>/dev/null || true)"
-  oc exec -n "${ns}" "${pod}" -- virsh dumpxml "${dom}" > "${outDir}/dom.xml" 2>/dev/null || true
+  [ -n "${node}" ] || node="$(oc get vmi "${vm}" -n "${ns}" \
+    -o jsonpath='{.status.nodeName}' 2>/dev/null || true)"
+  # dumpxml via oc exec stdout — no file written on the node
+  oc exec -n "${ns}" "${pod}" -- virsh dumpxml "${dom}" \
+    > "${outDir}/dom.xml" 2>/dev/null || true
   if [ -n "${node}" ]; then
     log "reading kernel log from node ${node} ..."
-    timeout 90 oc debug "node/${node}" -- chroot /host dmesg > "${outDir}/kern.log" 2>/dev/null || true
+    timeout 90 oc debug "node/${node}" -- chroot /host dmesg \
+      > "${outDir}/kern.log" 2>/dev/null || true
   fi
   if [ -s "${outDir}/kern.log" ] || [ -s "${outDir}/dom.xml" ]; then
-    # only pass a source flag when that file was actually captured
     typeset -a args=(--vm "${dom}")
     [ -s "${outDir}/kern.log" ] && args+=(--log-file "${outDir}/kern.log")
-    [ -s "${outDir}/dom.xml" ]  && args+=(--domain-xml "${outDir}/dom.xml")
+    [ -s "${outDir}/dom.xml"  ] && args+=(--domain-xml "${outDir}/dom.xml")
     bash "${scriptDir}/collect-host-signals.sh" "${args[@]}" \
       > "${outDir}/host-signals.json" 2>/dev/null || true
-    log "host-signals.json written (splitLockDetected: $(jq -r .splitLockDetected "${outDir}/host-signals.json" 2>/dev/null))"
+    log "host-signals.json written (splitLockDetected: \
+$(jq -r .splitLockDetected "${outDir}/host-signals.json" 2>/dev/null))"
   else
-    log "no kernel log or domain XML captured; skipping host-signals (TLB-flush/#AC evidence lives ONLY here)."
+    log "no kernel log or domain XML captured — split-lock evidence only lives here."
+  fi
+  true
+}
+
+# ── wait_dump_complete — I/O quiescence detection ────────────────────────────
+# Windows writes MEMORY.DMP as a sequential stream before the system halts.
+# When disk write bytes stop increasing for IDLE_SECS, the dump is complete.
+# This is the correct signal to stop the VM and extract the dump offline.
+function wait_dump_complete () {
+  typeset idle_threshold=30   # seconds of no write activity = dump done
+  typeset poll_interval=10
+  typeset t=0
+  typeset idle=0
+  typeset prev_writes=-1
+
+  log "waiting for I/O quiescence (MEMORY.DMP write completion, max ${quiesceWait}s) ..."
+  while [[ $t -lt $quiesceWait ]]; do
+    typeset cur_writes
+    cur_writes="$(oc exec -n "${ns}" "${pod}" -- \
+      virsh domstats --block "${dom}" 2>/dev/null \
+      | awk -F= '/\.wr\.bytes=/{sum+=$2} END{print int(sum)}' || echo -1)"
+
+    if [[ "${cur_writes}" == "${prev_writes}" && "${cur_writes}" != "-1" ]]; then
+      idle=$((idle + poll_interval))
+      log "  I/O idle ${idle}s (writes=${cur_writes}) ..."
+      if [[ $idle -ge $idle_threshold ]]; then
+        log "I/O quiescent for ${idle}s — MEMORY.DMP write complete"
+        return 0
+      fi
+    else
+      idle=0
+      log "  disk writes active: ${cur_writes} bytes (${t}s elapsed) ..."
+    fi
+
+    prev_writes="${cur_writes}"
+    sleep "${poll_interval}"
+    t=$((t + poll_interval))
+  done
+  log "WARN: I/O quiescence timeout (${quiesceWait}s) — proceeding with VM stop"
+  true
+}
+
+# ── collect_offline — stop VM + extract dumps offline via ODF snapshot ────────
+# This is the PRIMARY collection path (Item 7 of architectural review).
+# IMPORTANT: resolve the guest PVC name BEFORE stopping the VM, because the
+# virt-launcher pod disappears after virtctl stop and recover-natural-crash.sh
+# needs it for ODF snapshot. Pass --pvc explicitly to bypass pod resolution.
+function collect_offline () {
+  # 0. Resolve guest PVC name NOW while VMI is still accessible.
+  typeset guestPvc=''
+  guestPvc="$(oc get vmi "${vm}" -n "${ns}" \
+    -o jsonpath='{.spec.volumes[*].persistentVolumeClaim.claimName}' 2>/dev/null || true)"
+  if [[ -z "${guestPvc}" ]]; then
+    guestPvc="$(oc get vmi "${vm}" -n "${ns}" \
+      -o jsonpath='{.spec.volumes[*].dataVolume.name}' 2>/dev/null \
+      | tr ' ' '\n' | grep -v '^$' | head -1)"
+  fi
+  log "Guest PVC resolved before VM stop: ${guestPvc:-unknown}"
+
+  # 1. Stop the VM so the disk is consistent for offline extraction.
+  log "stopping VM via virtctl stop ..."
+  virtctl stop "${vm}" -n "${ns}" 2>/dev/null || \
+    oc exec -n "${ns}" "${pod}" -- virsh destroy "${dom}" 2>/dev/null || true
+  # Wait for VMI to go offline (max 90s)
+  typeset t=0
+  typeset vmiPhase="Running"
+  while [[ $t -lt 90 && "${vmiPhase}" == "Running" ]]; do
+    sleep 5; t=$((t+5))
+    vmiPhase="$(oc get vmi "${vm}" -n "${ns}" \
+      -o jsonpath='{.status.phase}' 2>/dev/null || echo Stopped)"
+  done
+  log "VMI phase after stop: ${vmiPhase}"
+
+  # 2. Offline dump extraction via ODF VolumeSnapshot → libguestfs
+  log "extracting MEMORY.DMP + Minidump offline via ODF snapshot ..."
+  if [ -f "${scriptDir}/recover-natural-crash.sh" ]; then
+    typeset -a recoverArgs=(--ns "${ns}" --vm "${vm}" --out "${outDir}" --path2-only)
+    [[ -n "${guestPvc}" ]] && recoverArgs+=(--pvc "${guestPvc}")
+    bash "${scriptDir}/recover-natural-crash.sh" \
+      "${recoverArgs[@]}" 2>&1 | while IFS= read -r line; do log "${line}"; done || true
+    bugCheck="$(jq -r '.dumps[0].bugCheckName // empty' \
+      "${outDir}/parse-dump-header.json" 2>/dev/null)" || true
+  else
+    log "recover-natural-crash.sh not found — skipping offline extraction"
+  fi
+
+  # 3. Restart the VM for the next test iteration (unless --no-restart)
+  if [[ "${noRestart}" -eq 0 ]]; then
+    log "restarting VM via virtctl start ..."
+    virtctl start "${vm}" -n "${ns}" 2>/dev/null || true
+    log "VM restart requested — may take a few minutes to be ready"
   fi
   true
 }
@@ -162,60 +302,11 @@ function capture_host_signals () {
 typeset rebooted=false
 typeset bugCheck=""
 
-# collect_after_reboot — wait for the guest to reboot, then pull the minidump and cross-check.
-function collect_after_reboot () {
-  log "waiting up to ${rebootWait}s for the guest agent to return ..."
-  typeset t=0
-  while [ "${t}" -lt "${rebootWait}" ]; do
-    if ping_ok; then log "guest agent back after ~${t}s"; break; fi
-    sleep 5; t=$((t+5))
-  done
-  if ! ping_ok; then
-    log "guest did NOT reboot within ${rebootWait}s -- HARD FREEZE detected."
-    log "MEMORY.DMP is already written to guest disk before freeze."
-    log "Triggering offline dump retrieval via ODF VolumeSnapshot (no reboot needed)..."
-    if [ -f "${scriptDir}/recover-natural-crash.sh" ]; then
-      bash "${scriptDir}/recover-natural-crash.sh" \
-        --ns  "${ns}" \
-        --vm  "${vm}" \
-        --out "${outDir}" \
-        --path2-only 2>&1 | while IFS= read -r line; do log "${line}"; done || true
-      bugCheck="$(jq -r '.dumps[0].bugCheckName // empty' "${outDir}/parse-dump-header.json" 2>/dev/null)" || true
-    else
-      log "recover-natural-crash.sh not found — skipping offline retrieval."
-      log "Run manually: bash recover-natural-crash.sh --ns ${ns} --vm ${vm} --out ${outDir} --path2-only"
-    fi
-    return 0
-  fi
-  rebooted=true
-  log "running collect-guest.ps1 ..."
-  if ! ga exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\bsod-detector\src\scripts\collect-guest.ps1' \
-    2>/dev/null | sed -n '/^{/,$p' > "${outDir}/collect-guest.json"; then
-    true
-  fi
-  # pull the newest minidump and cross-check offline
-  typeset dmpRaw=''
-  dmpRaw="$(ga exec powershell.exe -NoProfile -Command "(Get-ChildItem C:\\Windows\\Minidump\\*.dmp | Sort-Object LastWriteTime -Desc | Select-Object -First 1).Name" 2>/dev/null)" || true
-  typeset dmp=''
-  dmp="$(printf '%s\n' "${dmpRaw}" | tr -d '\r' | sed -n '/\.[dD][mM][pP]/p')"
-  if [ -n "${dmp}" ]; then
-    mkdir -p "${outDir}/Minidump"
-    ga get "C:\\Windows\\Minidump\\${dmp}" "${outDir}/Minidump/${dmp}" >/dev/null 2>&1 || true
-    if [ -f "${outDir}/Minidump/${dmp}" ]; then
-      bash "${scriptDir}/parse-dump-header.sh" "${outDir}/Minidump/${dmp}" > "${outDir}/parse-dump-header.json" 2>/dev/null || true
-      bugCheck="$(jq -r '.dumps[0].bugCheckName // empty' "${outDir}/parse-dump-header.json" 2>/dev/null)" || true
-    fi
-    log "minidump pulled: ${dmp} ; bugcheck: ${bugCheck:-unknown}"
-  else
-    log "no minidump found (a HYPERVISOR_ERROR often writes none)."
-  fi
-  true
-}
-
-# write_summary <domstate> — assemble evidence-summary.json from all collected artifacts.
+# ── write_summary ─────────────────────────────────────────────────────────────
 function write_summary () {
   typeset splitLock="null"
-  [ -s "${outDir}/host-signals.json" ] && splitLock="$(jq -c '.splitLockDetected // null' "${outDir}/host-signals.json" 2>/dev/null || echo null)"
+  [ -s "${outDir}/host-signals.json" ] && \
+    splitLock="$(jq -c '.splitLockDetected // null' "${outDir}/host-signals.json" 2>/dev/null || echo null)"
   jq -n \
     --arg vm "${vm}" --arg ns "${ns}" --arg dom "${dom}" \
     --arg detectedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -226,30 +317,64 @@ function write_summary () {
       guestRebooted:$rebooted, hardFreeze:($rebooted|not),
       bugCheck:(if $bugcheck=="" then null else $bugcheck end),
       splitLockDetected:$splitLockDetected,
-      artifacts:{screenshot:"bsod-screenshot.png", hostSignals:"host-signals.json",
-                 domainXml:"dom.xml", kernelLog:"kern.log",
-                 guestCollect:"collect-guest.json", dumpHeader:"parse-dump-header.json"}}' \
+      artifacts:{
+        screenshot:"bsod-screenshot.png",
+        vmMemoryRaw:"vm-memory.raw",
+        hostSignals:"host-signals.json",
+        domainXml:"dom.xml",
+        kernelLog:"kern.log",
+        dumpHeader:"parse-dump-header.json"}}' \
     > "${outDir}/evidence-summary.json" 2>/dev/null || true
   log "evidence-summary.json written."
   true
 }
 
-log "watching ${vm} (pod=${pod}, dom=${dom}); poll ${interval}s, crash after ${miss} missed pings. Ctrl-C to stop."
+# ── Main watch loop ───────────────────────────────────────────────────────────
+log "watching ${vm} (pod=${pod}, dom=${dom}); poll ${interval}s, crash after ${miss} missed pings."
+log "Ctrl-C to stop."
 typeset misses=0
 until ping_ok; do log "waiting for guest agent to be reachable ..."; sleep "${interval}"; done
 log "guest agent healthy; watching for a natural crash ..."
 
-# Keep the display awake so pre-crash/repaint frames aren't all-black (DPMS). Best-effort.
-# Wrapped with timeout 15 so a crash immediately after startup cannot block this forever.
+# Keep the display awake so pre-crash frames aren't all-black (DPMS). Best-effort.
 timeout 15 ga exec powercfg /change monitor-timeout-ac 0 >/dev/null 2>&1 || true
 
-# A natural bugcheck may leave the domain 'running' (pure hang) OR, if the VM has a
-# pvpanic device, transition it to paused/crashed/pmsuspended. All of those, with a
-# dead agent, mean "crashed" -- only a clean 'shutoff' does not.
-function is_crash_state () { case "$1" in running|paused|crashed|pmsuspended) return 0;; *) return 1;; esac; }
+# Also watch for pvpanic K8s events in the background (KubeVirt >= v1.8.0).
+# pvpanic fires immediately when the guest kernel panics — before QGA times out.
+# The event triggers the same crash-response path as the QGA miss counter.
+typeset PVPANIC_TRIGGERED=0
+(
+  oc get events -n "${ns}" -w \
+    --field-selector "reason=Panicked" 2>/dev/null | \
+  while IFS= read -r line; do
+    if echo "${line}" | grep -q "${vm}"; then
+      echo "PVPANIC" > /tmp/pvpanic_signal_${vm}
+    fi
+  done
+) &
+PVPANIC_PID=$!
 
 typeset st=''
 while true; do
+  # Check for pvpanic event signal
+  if [[ -f "/tmp/pvpanic_signal_${vm}" ]]; then
+    rm -f "/tmp/pvpanic_signal_${vm}"
+    st="$(domstate || echo crashed)"
+    log "*** PVPANIC EVENT DETECTED (domstate=${st}) — crash confirmed ***"
+    PVPANIC_TRIGGERED=1
+    kill "${PVPANIC_PID}" 2>/dev/null || true
+    # Execute full crash response
+    capture_screenshot
+    capture_vm_memory
+    capture_host_signals
+    wait_dump_complete
+    collect_offline
+    write_summary "${st}"
+    log "evidence package: ${outDir}"
+    exit 0
+  fi
+
+  # Standard QGA ping-based detection
   if ping_ok; then
     misses=0
   else
@@ -258,9 +383,12 @@ while true; do
     log "missed ping ${misses}/${miss} (domstate=${st})"
     if [ "${misses}" -ge "${miss}" ] && is_crash_state "${st}"; then
       log "*** CRASH/FREEZE DETECTED (agent dead, domstate=${st}) ***"
-      capture_screens "${outDir}"
+      kill "${PVPANIC_PID}" 2>/dev/null || true
+      capture_screenshot
+      capture_vm_memory
       capture_host_signals
-      collect_after_reboot
+      wait_dump_complete
+      collect_offline
       write_summary "${st}"
       log "evidence package: ${outDir}"
       exit 0

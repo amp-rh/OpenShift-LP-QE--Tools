@@ -269,10 +269,13 @@ main() {
         log_info "  Trigger PID: $TRIGGER_PID | Log: $TRIGGER_LOG"
         sleep 3  # brief pause so notmyfault actually launches on guest
 
-        # Step 7: Poll every 5s — wait for DOWN then UP
-        log_info "STEP 7 [Attempt $ATTEMPT]: Polling (5s interval) — waiting for crash then reboot..."
-        PHASE="wait_crash"
-        POLL_MAX=600  # 10 min per attempt
+        # Step 7: Poll every 5s — wait for crash only.
+        # AutoReboot=0 (crash-control.json default): VM stays frozen after BSOD so
+        # Windows can finish writing MEMORY.DMP. No reboot wait — watch-crash.sh
+        # handles the full pipeline: I/O quiescence → virtctl stop → ODF snapshot
+        # → libguestfs extraction → virtctl start.
+        log_info "STEP 7 [Attempt $ATTEMPT]: Polling (5s interval) — waiting for crash (AutoReboot=0)..."
+        POLL_MAX=300  # 5 min max to detect crash
 
         for i in $(seq 1 $((POLL_MAX / 5))); do
             sleep 5
@@ -282,23 +285,14 @@ main() {
                 python3 src/scripts/host/guest-agent.py ping > /dev/null 2>&1
             PING_EXIT=$?
 
-            if [ "$PHASE" = "wait_crash" ]; then
-                if [ $PING_EXIT -ne 0 ]; then
-                    log_success "⚡ CRASH CONFIRMED at +${ELAPSED_POLL}s — guest is DOWN!"
-                    CRASH_DETECTED=1
-                    PHASE="wait_reboot"
-                    log_info "  Now waiting for guest to come back UP..."
-                else
-                    log_info "  ⏳ [+${ELAPSED_POLL}s] Guest online (waiting for crash)..."
-                fi
+            if [ $PING_EXIT -ne 0 ]; then
+                log_success "⚡ CRASH CONFIRMED at +${ELAPSED_POLL}s — guest is DOWN!"
+                log_info "  Windows is writing MEMORY.DMP (AutoReboot=0 — VM stays frozen)"
+                log_info "  watch-crash.sh will detect I/O quiescence, stop VM, extract dumps offline"
+                CRASH_DETECTED=1
+                break
             else
-                if [ $PING_EXIT -eq 0 ]; then
-                    log_success "🔄 REBOOT COMPLETE at +${ELAPSED_POLL}s — guest is back ONLINE!"
-                    REBOOT_DETECTED=1
-                    break
-                else
-                    log_info "  ⏳ [+${ELAPSED_POLL}s] Guest rebooting..."
-                fi
+                log_info "  ⏳ [+${ELAPSED_POLL}s] Guest online (waiting for crash)..."
             fi
         done
 
@@ -319,81 +313,33 @@ main() {
     [ -n "$TRIGGER_PID" ] && kill "$TRIGGER_PID" 2>/dev/null || true
     set -e
 
-    # Step 8: Check if guest rebooted or hard-froze, then retrieve dump accordingly
+    # Step 8: Wait for watch-crash.sh to complete the full pipeline.
+    # watch-crash.sh now owns the entire post-crash workflow:
+    #   detect I/O quiescence → virtctl stop → ODF snapshot → libguestfs extract
+    #   → parse-dump-header.sh → evidence-summary.json → virtctl start
+    # This script just waits for it to finish (max 30 min for full pipeline).
     log_info ""
-    log_info "STEP 8: Guest state check + dump retrieval"
+    log_info "STEP 8: Waiting for watch-crash.sh to complete full evidence pipeline..."
+    log_info "  Pipeline: I/O quiescence → VM stop → ODF snapshot → dump extract → VM restart"
     set +e
-
-    if [ $REBOOT_DETECTED -eq 1 ]; then
-        # ── Guest rebooted cleanly — verify dump via QGA ──────────────────────
-        log_success "Guest rebooted — verifying fresh dump via QGA..."
-
-        DUMP_CHECK=$(GA_VM="$VM_NAME" GA_NS="$NAMESPACE" timeout 20 \
-            python3 src/scripts/host/guest-agent.py exec powershell.exe -NoProfile -Command \
-            "\$mini = Get-ChildItem 'C:\Windows\Minidump\' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1;
-             \$mem  = if (Test-Path 'C:\Windows\MEMORY.DMP') { Get-Item 'C:\Windows\MEMORY.DMP' } else { \$null };
-             if (\$mini) { Write-Host ('MINIDUMP: ' + \$mini.Name + ' | ' + \$mini.Length + ' bytes | ' + \$mini.LastWriteTime) }
-             else         { Write-Host 'MINIDUMP: none found' }
-             if (\$mem)  { Write-Host ('MEMORY.DMP: ' + \$mem.Length + ' bytes | ' + \$mem.LastWriteTime) }
-             else         { Write-Host 'MEMORY.DMP: not present' }" 2>&1)
-        echo "$DUMP_CHECK" | tee -a "$LOG_FILE"
-
-    else
-        # ── Hard freeze — VM did not reboot ───────────────────────────────────
-        # MEMORY.DMP is already written to disk from the BSOD sequence.
-        # No reboot needed — retrieve offline via ODF VolumeSnapshot → libguestfs.
-        log_warning "Guest did NOT reboot (hard freeze) — MEMORY.DMP is on disk."
-        log_info "  Triggering offline dump retrieval via ODF VolumeSnapshot (no reboot required)..."
-
-        RECOVER_SCRIPT="$(dirname "$0")/../host/recover-natural-crash.sh"
-        # fallback path if running from detector root
-        [ -f "$RECOVER_SCRIPT" ] || RECOVER_SCRIPT="src/scripts/host/recover-natural-crash.sh"
-
-        if [ -f "$RECOVER_SCRIPT" ]; then
-            bash "$RECOVER_SCRIPT" \
-                --ns  "$NAMESPACE" \
-                --vm  "$VM_NAME" \
-                --out "$EVIDENCE_DIR" \
-                --path2-only 2>&1 | tee -a "$LOG_FILE" || true
-            log_success "Offline dump retrieval complete — check $EVIDENCE_DIR"
-        else
-            log_warning "recover-natural-crash.sh not found."
-            log_warning "Run manually:"
-            log_warning "  bash src/scripts/host/recover-natural-crash.sh \\"
-            log_warning "    --ns $NAMESPACE --vm $VM_NAME --out $EVIDENCE_DIR --path2-only"
+    WATCH_WAIT=0
+    WATCH_MAX=1800  # 30 min max
+    while [ $WATCH_WAIT -lt $WATCH_MAX ]; do
+        if ! kill -0 $WATCH_PID 2>/dev/null; then
+            log_success "watch-crash.sh completed after ${WATCH_WAIT}s"
+            break
         fi
-        DUMP_CHECK="offline-retrieval"
-    fi
-
-    if echo "$DUMP_CHECK" | grep -q "MINIDUMP: none found"; then
-        log_warning "  No minidump found — dump may not have been written. Check CrashControl settings."
-    else
-        log_success "  Fresh minidump confirmed on guest."
+        sleep 30
+        WATCH_WAIT=$((WATCH_WAIT + 30))
+        log_info "  ⏳ watch-crash.sh still running (${WATCH_WAIT}s elapsed) ..."
+    done
+    if kill -0 $WATCH_PID 2>/dev/null; then
+        log_warning "watch-crash.sh did not complete in ${WATCH_MAX}s — terminating"
+        kill $WATCH_PID 2>/dev/null || true
     fi
     set -e
 
-    # Step 9: Wait for evidence collection
-    log_info ""
-    log_info "STEP 9: Wait for evidence collection (${COLLECTION_WAIT}s)"
-    log_info "  Waiting for watch-crash.sh to finish collecting evidence..."
-    sleep "$COLLECTION_WAIT"
-
-    # Step 10: Check if watch-crash finished
-    log_info ""
-    log_info "STEP 10: Check watch-crash.sh status"
-    if kill -0 $WATCH_PID 2>/dev/null; then
-        log_warning "watch-crash.sh still running (PID: $WATCH_PID)"
-        log_info "  Waiting additional 60 seconds for collection to complete..."
-        sleep 60
-        if kill -0 $WATCH_PID 2>/dev/null; then
-            log_warning "watch-crash.sh still running - terminating"
-            kill $WATCH_PID 2>/dev/null || true
-        fi
-    else
-        log_success "watch-crash.sh completed"
-    fi
-
-    # Step 11: Report results
+    # Step 9: Report results
     log_info ""
     log_info "╔════════════════════════════════════════════════════════════════╗"
     log_info "║                     EXECUTION COMPLETE                         ║"
