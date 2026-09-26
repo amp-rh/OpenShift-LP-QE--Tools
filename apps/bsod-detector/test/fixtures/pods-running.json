@@ -1,0 +1,7 @@
+{
+  "apiVersion": "v1",
+  "kind": "PodList",
+  "items": [
+    {"metadata": {"name": "virt-launcher-fixture-vm-current"}, "status": {"phase": "Running"}}
+  ]
+}

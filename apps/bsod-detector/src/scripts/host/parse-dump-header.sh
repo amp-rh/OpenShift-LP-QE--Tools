@@ -13,7 +13,7 @@
 #   { "ok": true, "dumps": [ { "file": "...", "bugCheckCode": "0x...",
 #     "bugCheckName": "...", "parameters": [...], "valid": true } ], "warnings": [] }
 #
-# Requires: Bash 4.4+, xxd, jq, python3 (for struct unpacking on 64-bit params)
+# Requires: Bash 4.4+, jq, python3
 ####
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
   printf 'parse-dump-header: requires Bash >= 4.4 (found %s)\n' "${BASH_VERSION}" >&2; exit 2
@@ -23,7 +23,7 @@ set -euxo pipefail; shopt -s inherit_errexit
 
 typeset scriptDir; scriptDir="$(cd "$(dirname "$0")" && pwd)"
 typeset repoRoot; repoRoot="$(cd "${scriptDir}/../../.." && pwd)"
-typeset codesFile="${repoRoot}/src/data/bugcheck-codes.json"
+typeset codesFile="${BSOD_CODES_FILE:-${repoRoot}/src/data/bugcheck-codes.json}"
 
 # die — print a fatal error to stderr and exit.
 function die () { echo "parse-dump-header: $*" >&2; exit 2; }
@@ -85,7 +85,8 @@ typeset -a results=()
 for dump in "${files[@]}"; do
   typeset baseName; baseName="$(basename "${dump}")"
 
-  typeset sig; sig=$(xxd -l 8 -p "${dump}" 2>/dev/null || echo "")
+  typeset sig
+  sig="$(python3 -c 'import sys; print(open(sys.argv[1], "rb").read(8).hex())' "${dump}" 2>/dev/null || true)"
   if [[ "${sig}" != "${pagedu64Sig}" ]]; then
     warnList+=("${baseName}: not a PAGEDU64 dump (sig=${sig}), skipped")
     results+=("$(jq -n --arg f "${baseName}" '{file:$f, bugCheckCode:null, bugCheckName:null, parameters:[], valid:false, error:"not a PAGEDU64 dump"}')")

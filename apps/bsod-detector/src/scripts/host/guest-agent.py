@@ -271,35 +271,80 @@ def guest_get(guestpath, local, chunk=3500 * 1024, auto_compress=True):
     return total
 
 
+def _print_exec_result(result):
+    """Print captured guest output and return the guest process exit status."""
+    if result.get("stdout"):
+        sys.stdout.write(result["stdout"] + ("" if result["stdout"].endswith("\n") else "\n"))
+    if result.get("stderr"):
+        sys.stderr.write(result["stderr"] + ("" if result["stderr"].endswith("\n") else "\n"))
+    if result.get("timeout"):
+        sys.stderr.write(result.get("message", "guest command timed out") + "\n")
+        return 124
+    exit_code = result.get("exitcode")
+    if exit_code is None:
+        sys.stderr.write("guest command did not report an exit code\n")
+        return 125
+    return int(exit_code)
+
+
+def _psfile_args(arguments):
+    """Parse generic companion uploads before the PowerShell argument separator."""
+    if arguments and arguments[0] not in {"--companion", "--"}:
+        return [], arguments
+    companions = []
+    powershell_args = []
+    index = 0
+    while index < len(arguments):
+        if arguments[index] == "--":
+            powershell_args.extend(arguments[index + 1:])
+            break
+        if arguments[index] != "--companion" or index + 2 >= len(arguments):
+            raise ValueError("psfile expects --companion <local> <guest-path> entries followed by -- and PowerShell args")
+        companions.append((arguments[index + 1], arguments[index + 2]))
+        index += 3
+    return companions, powershell_args
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__); sys.exit(2)
     cmd = sys.argv[1]
     if cmd == "ping":
-        print(agent({"execute": "guest-ping"}, timeout=10)); return
+        print(agent({"execute": "guest-ping"}, timeout=10)); return 0
     if cmd == "exec":
+        if len(sys.argv) < 3:
+            print("exec requires a program", file=sys.stderr); return 2
         r = guest_exec(sys.argv[2], sys.argv[3:])
-        print(f"[exit {r.get('exitcode')}]")
-        if r.get("stdout"): sys.stdout.write(r["stdout"] + ("" if r["stdout"].endswith("\n") else "\n"))
-        if r.get("stderr"): sys.stderr.write("STDERR:\n" + r["stderr"] + "\n")
-        return
+        return _print_exec_result(r)
+    if cmd == "exec-nowait":
+        if len(sys.argv) < 3:
+            print("exec-nowait requires a program", file=sys.stderr); return 2
+        print(json.dumps(guest_exec(sys.argv[2], sys.argv[3:], wait=False), sort_keys=True))
+        return 0
     if cmd == "put":
-        n = guest_put(sys.argv[2], sys.argv[3]); print(f"wrote {n} bytes -> {sys.argv[3]}"); return
+        n = guest_put(sys.argv[2], sys.argv[3]); print(f"wrote {n} bytes -> {sys.argv[3]}"); return 0
     if cmd == "get":
-        n = guest_get(sys.argv[2], sys.argv[3]); print(f"read {n} bytes -> {sys.argv[3]}"); return
+        n = guest_get(sys.argv[2], sys.argv[3]); print(f"read {n} bytes -> {sys.argv[3]}"); return 0
     if cmd == "psfile":
+        if len(sys.argv) < 3:
+            print("psfile requires a local PowerShell file", file=sys.stderr); return 2
         local = sys.argv[2]
         guestpath = "C:\\Windows\\Temp\\" + local.replace("\\", "/").split("/")[-1]
-        n = guest_put(local, guestpath); print(f"[uploaded {n}B -> {guestpath}]")
+        try:
+            companions, powershell_args = _psfile_args(sys.argv[3:])
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr); return 2
+        n = guest_put(local, guestpath)
+        sys.stderr.write(f"uploaded {n} bytes -> {guestpath}\n")
+        for companion_local, companion_guest in companions:
+            size = guest_put(companion_local, companion_guest)
+            sys.stderr.write(f"uploaded {size} bytes -> {companion_guest}\n")
         r = guest_exec("powershell.exe",
-                       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", guestpath] + sys.argv[3:],
+                       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", guestpath] + powershell_args,
                        poll_timeout=600)
-        print(f"[exit {r.get('exitcode')}]")
-        if r.get("stdout"): sys.stdout.write(r["stdout"])
-        if r.get("stderr"): sys.stderr.write("STDERR:\n" + r["stderr"])
-        return
-    print("unknown cmd", cmd); sys.exit(2)
+        return _print_exec_result(r)
+    print("unknown cmd", cmd); return 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -53,10 +53,10 @@ if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce)" != "Disabled" ]];
 fi
 
 exec podman run --rm \
+  -e MODE=extract \
   --userns=keep-id \
   "${selinuxOpt[@]}" \
   -v "${disk}":/images/"$(basename "${disk}")":ro \
   -v "${out}":/out:Z \
   "${image}" \
-  -- \
   --disk /images/"$(basename "${disk}")" --out /out

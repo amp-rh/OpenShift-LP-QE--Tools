@@ -86,7 +86,7 @@ function kill_vm () {
     oc delete vmi "$1" -n "${_kubevirt_ns}" 2>/dev/null
 }
 
-# screenshot <vm> <outfile> — capture via virsh screenshot inside virt-launcher.
+# screenshot <vm> <outfile> — stream pod-local virsh output directly to caller storage.
 # UNTESTED: requires live KubeVirt cluster.
 function screenshot () {
   _resolve_ns || return 1
@@ -95,8 +95,8 @@ function screenshot () {
   [[ -n "${pod}" ]] || return 1
   typeset dom="${_kubevirt_ns}_${1}"
   oc exec -n "${_kubevirt_ns}" "${pod}" -- \
-    virsh screenshot "${dom}" /tmp/screenshot.ppm >/dev/null 2>&1 || return 1
-  oc cp "${_kubevirt_ns}/${pod}:/tmp/screenshot.ppm" "$2" >/dev/null 2>&1
+    virsh screenshot "${dom}" /dev/stdout > "$2" 2>/dev/null || return 1
+  [[ -s "$2" ]]
 }
 
 # snapshot_create <vm> <name> — NOT SUPPORTED on KubeVirt.
@@ -113,7 +113,7 @@ function snapshot_revert () {
   return 1
 }
 
-# memory_dump <vm> <outfile> — capture via virsh dump inside virt-launcher.
+# memory_dump <vm> <outfile> — stream ELF directly; never stage VM RAM in pod /tmp.
 # UNTESTED: requires live KubeVirt cluster.
 function memory_dump () {
   _resolve_ns || return 1
@@ -122,8 +122,8 @@ function memory_dump () {
   [[ -n "${pod}" ]] || return 1
   typeset dom="${_kubevirt_ns}_${1}"
   oc exec -n "${_kubevirt_ns}" "${pod}" -- \
-    virsh dump "${dom}" /tmp/guest-memory.elf --memory-only 2>&1 || return 1
-  oc cp "${_kubevirt_ns}/${pod}:/tmp/guest-memory.elf" "$2" >/dev/null 2>&1
+    virsh dump --memory-only --format elf "${dom}" /dev/stdout > "$2" 2>/dev/null || return 1
+  [[ -s "$2" ]]
 }
 
 # guest_ip <vm> — print the guest IP from the VMI status.

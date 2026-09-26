@@ -3,6 +3,27 @@
 Detect, capture, and analyze Blue Screen of Death (BSOD) events on Windows VMs
 running under KVM/libvirt or KubeVirt/OpenShift Virtualization.
 
+## Supported automated reliability path
+
+The fail-closed automated watcher/recovery path is **RHOV/KubeVirt-only**. It
+requires `runStrategy: Manual`, a durable evidence mount, a compatible CSI
+snapshot class, explicit RBAC, a digest-pinned recovery image, and verified guest
+CrashControl/QGA prerequisites. It does not patch platform or guest safety
+settings automatically. KVM scripts elsewhere in this repository are separate
+development tools, not automatic fallbacks.
+
+See [`docs/rhov-reliability.md`](docs/rhov-reliability.md) for the exact
+preflight, state-machine, disk-progress, artifact, failure, and cleanup contract.
+Those behaviors are fixture/mock tested; this change does not claim live-cluster
+validation.
+
+> **Documentation boundary:** `docs/rhov-reliability.md` and the current script
+> `--help` output are the authoritative operational contract. The remaining
+> long-form material below contains historical experiments and standalone KVM
+> examples; references to automatic reboot, old watcher flags, path1/path2, or
+> implicit backend fallback are legacy notes and must not be used as an RHOV
+> runbook.
+
 ## Architecture
 
 **Offline-first:** the guest is a pure crash target. After a BSOD, the host
@@ -10,9 +31,9 @@ stops the VM, mounts the guest disk via guestfs, and extracts crash dumps +
 event logs offline. No guest-side scripts, staging, or SSH needed for evidence
 collection.
 
-**Backend-abstracted:** VM operations go through a dispatch layer that selects
-`virsh` (KVM) or `virtctl`/`oc` (KubeVirt) based on the `BSOD_DET__HYP_PROV`
-environment variable.
+The standalone offline/KVM tools retain a backend dispatch layer. The automated
+watcher and snapshot recovery do not use it: they are explicitly RHOV-only and
+prefer `virtctl`/`oc`, with narrowly scoped pod-local `virsh` diagnostics.
 
 ## What It Captures
 
