@@ -1,0 +1,7 @@
+{
+  "apiVersion": "snapshot.storage.k8s.io/v1",
+  "kind": "VolumeSnapshotClass",
+  "metadata": {"name": "fixture-snapshot-class"},
+  "driver": "fixture.csi.example.test",
+  "deletionPolicy": "Delete"
+}

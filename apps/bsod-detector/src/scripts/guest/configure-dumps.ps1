@@ -22,6 +22,10 @@
 .PARAMETER VerifyOnly
     Report current settings without modifying the registry.
 
+.PARAMETER DataFile
+    Explicit path to crash-control.json. Required when the script is staged
+    outside its repository layout (for example through qemu-guest-agent).
+
 .OUTPUTS
     A single JSON object to stdout:
     {
@@ -38,20 +42,27 @@
 [CmdletBinding()]
 param(
     [string]$DumpType,
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [string]$DataFile
 )
 
 # --- standalone helpers (no Common.ps1 dependency) ---
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..'))
-$script:DataDir  = Join-Path $script:RepoRoot 'src\data'
+$script:DataFile = $DataFile
+if (-not $script:DataFile) {
+    $repoCandidate = Join-Path $PSScriptRoot '..\..\..'
+    if (Test-Path $repoCandidate) {
+        $script:DataFile = Join-Path (Resolve-Path $repoCandidate) 'src\data\crash-control.json'
+    }
+}
 
 function Get-BsodData {
     <# .SYNOPSIS Load a source-of-truth JSON file from data/. #>
     param([Parameter(Mandatory)][string]$Name)
-    $p = Join-Path $script:DataDir $Name
+    $p = if ($Name -eq 'crash-control.json') { $script:DataFile } else { $null }
+    if (-not $p) { throw "No explicit data path is configured for $Name" }
     if (-not (Test-Path $p)) { throw "Data file not found: $p" }
     Get-Content -Raw -Path $p | ConvertFrom-Json
 }

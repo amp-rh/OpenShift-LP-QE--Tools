@@ -16,5 +16,9 @@ if ! command -v jq &>/dev/null; then
   exit 1
 fi
 
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v \
+  "${testDir}/test_reliability.py" \
+  "${testDir}/test_evtx.py" \
+  "${testDir}/test_container_contract.py"
 bats "${testDir}/"
 true

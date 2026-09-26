@@ -14,8 +14,12 @@ GA_VM="${GA_VM:-}"
 GA_NS="${GA_NS:-}"
 WATCH_INTERVAL="${WATCH_INTERVAL:-5}"
 WATCH_MISS="${WATCH_MISS:-2}"
-WATCH_REBOOT_WAIT="${WATCH_REBOOT_WAIT:-300}"
 EVIDENCE_DIR="${EVIDENCE_DIR:-/evidence}"
+BSOD_SNAPSHOT_CLASS="${BSOD_SNAPSHOT_CLASS:-}"
+BSOD_RECOVERY_IMAGE="${BSOD_RECOVERY_IMAGE:-}"
+BSOD_MEMORY_DUMP_PVC="${BSOD_MEMORY_DUMP_PVC:-}"
+BSOD_EVIDENCE_VOLUME_KIND="${BSOD_EVIDENCE_VOLUME_KIND:-}"
+BSOD_EVIDENCE_STORAGE_ID="${BSOD_EVIDENCE_STORAGE_ID:-}"
 
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║              BSOD Detector — Container Entrypoint            ║"
@@ -37,36 +41,38 @@ case "$MODE" in
     echo "Starting natural crash watcher..."
     echo "  VM       : $GA_VM"
     echo "  NS       : $GA_NS"
-    echo "  Interval : ${WATCH_INTERVAL}s | Miss: $WATCH_MISS | RebootWait: ${WATCH_REBOOT_WAIT}s"
+    echo "  Interval : ${WATCH_INTERVAL}s | Miss: $WATCH_MISS"
     echo ""
-    exec /usr/local/bin/watch-crash \
+    [[ -n "$BSOD_SNAPSHOT_CLASS" ]] || { echo "ERROR: BSOD_SNAPSHOT_CLASS is required for MODE=watch"; exit 1; }
+    [[ -n "$BSOD_RECOVERY_IMAGE" ]] || { echo "ERROR: BSOD_RECOVERY_IMAGE is required for MODE=watch"; exit 1; }
+    [[ -n "$BSOD_MEMORY_DUMP_PVC" ]] || { echo "ERROR: BSOD_MEMORY_DUMP_PVC is required for MODE=watch"; exit 1; }
+    [[ -n "$BSOD_EVIDENCE_VOLUME_KIND" ]] || { echo "ERROR: BSOD_EVIDENCE_VOLUME_KIND is required for MODE=watch"; exit 1; }
+    [[ -n "$BSOD_EVIDENCE_STORAGE_ID" ]] || { echo "ERROR: BSOD_EVIDENCE_STORAGE_ID is required for MODE=watch"; exit 1; }
+    exec /usr/local/bin/watch-crash.sh \
       --ns    "$GA_NS" \
       --vm    "$GA_VM" \
       --out   "$EVIDENCE_DIR" \
+      --evidence-mount "$EVIDENCE_DIR" \
+      --evidence-volume-kind "$BSOD_EVIDENCE_VOLUME_KIND" \
+      --evidence-storage-id "$BSOD_EVIDENCE_STORAGE_ID" \
       --interval    "$WATCH_INTERVAL" \
       --miss        "$WATCH_MISS" \
-      --reboot-wait "$WATCH_REBOOT_WAIT"
+      --snap-class "$BSOD_SNAPSHOT_CLASS" \
+      --recovery-image "$BSOD_RECOVERY_IMAGE" \
+      --memory-dump-pvc "$BSOD_MEMORY_DUMP_PVC"
     ;;
 
   recover)
-    [[ -n "$GA_VM" ]] || { echo "ERROR: GA_VM is required for MODE=recover"; exit 1; }
-    [[ -n "$GA_NS" ]] || { echo "ERROR: GA_NS is required for MODE=recover"; exit 1; }
     echo "Starting hard-freeze evidence recovery..."
-    echo "  VM : $GA_VM"
-    echo "  NS : $GA_NS"
     echo ""
-    exec /usr/local/bin/recover-natural-crash \
-      --ns  "$GA_NS" \
-      --vm  "$GA_VM" \
-      --out "$EVIDENCE_DIR" \
-      "$@"
+    exec /usr/local/bin/recover-natural-crash.sh "$@"
     ;;
 
   extract)
     echo "Starting offline dump extraction (libguestfs)..."
     echo "  Pass --disk <path> --out <dir> as arguments."
     echo ""
-    exec /usr/local/bin/extract-dump "$@"
+    exec /usr/local/bin/extract-dump.sh "$@"
     ;;
 
   *)

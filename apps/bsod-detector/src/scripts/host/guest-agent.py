@@ -57,7 +57,13 @@ _resolved = False
 
 def _oc(args):
     """Run `oc <args>` and return stripped stdout, or '' on failure."""
-    r = subprocess.run(["oc"] + args, capture_output=True, text=True, check=False)
+    try:
+        r = subprocess.run(
+            ["oc", "--request-timeout=20s"] + args,
+            capture_output=True, text=True, check=False, timeout=25,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
@@ -110,11 +116,11 @@ def agent(cmd_obj, timeout=300):
     payload = json.dumps(cmd_obj)
     try:
         out = subprocess.run(
-            ["oc", "exec", "-n", NS, POD, "--",
+            ["oc", "--request-timeout=" + str(timeout) + "s", "exec", "-n", NS, POD, "--",
              "virsh", "qemu-agent-command", "--timeout", str(timeout), DOM, payload],
-            capture_output=True, text=True, check=False, timeout=timeout+30)
+            capture_output=True, text=True, check=False, timeout=timeout + 5)
     except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"oc exec timed out after {timeout+30}s: {e}")
+        raise RuntimeError(f"oc exec timed out after {timeout + 5}s: {e}")
     except Exception as e:
         raise RuntimeError(f"oc exec failed: {e}")
 
@@ -152,6 +158,34 @@ def guest_exec(path, args=None, wait=True, poll_timeout=600):
                 continue
             raise RuntimeError(f"guest-exec timed out waiting for pid {pid}: {e}")
     return {"pid": pid, "timeout": True, "message": f"waited {poll_timeout}s without exit"}
+
+
+def guest_exec_crash(path, args=None, poll_timeout=45):
+    """Start an intentional crash command and make its outcome explicit.
+
+    A reported guest exit is authoritative and its status is propagated.  A
+    transport loss after QGA confirmed process creation is the only successful
+    detached outcome; the armed watcher must still corroborate the crash.
+    """
+    launched = agent({"execute": "guest-exec", "arguments": {
+        "path": path, "arg": args or [], "capture-output": True,
+    }}, timeout=20)
+    pid = launched["pid"]
+    deadline = time.monotonic() + poll_timeout
+    while time.monotonic() < deadline:
+        try:
+            status = agent(
+                {"execute": "guest-exec-status", "arguments": {"pid": pid}},
+                timeout=5,
+            )
+        except RuntimeError as exc:
+            return {"pid": pid, "disconnected": True, "message": str(exc)}
+        if status.get("exited"):
+            out = base64.b64decode(status["out-data"]).decode("utf-8", "replace") if status.get("out-data") else ""
+            err = base64.b64decode(status["err-data"]).decode("utf-8", "replace") if status.get("err-data") else ""
+            return {"pid": pid, "exitcode": status.get("exitcode"), "stdout": out, "stderr": err}
+        time.sleep(1)
+    return {"pid": pid, "timeout": True, "message": f"crash command remained observable for {poll_timeout}s"}
 
 
 def guest_put(local, guestpath):
@@ -271,35 +305,89 @@ def guest_get(guestpath, local, chunk=3500 * 1024, auto_compress=True):
     return total
 
 
+def _print_exec_result(result):
+    """Print captured guest output and return the guest process exit status."""
+    if result.get("stdout"):
+        sys.stdout.write(result["stdout"] + ("" if result["stdout"].endswith("\n") else "\n"))
+    if result.get("stderr"):
+        sys.stderr.write(result["stderr"] + ("" if result["stderr"].endswith("\n") else "\n"))
+    if result.get("timeout"):
+        sys.stderr.write(result.get("message", "guest command timed out") + "\n")
+        return 124
+    exit_code = result.get("exitcode")
+    if exit_code is None:
+        sys.stderr.write("guest command did not report an exit code\n")
+        return 125
+    return int(exit_code)
+
+
+def _psfile_args(arguments):
+    """Parse generic companion uploads before the PowerShell argument separator."""
+    if arguments and arguments[0] not in {"--companion", "--"}:
+        return [], arguments
+    companions = []
+    powershell_args = []
+    index = 0
+    while index < len(arguments):
+        if arguments[index] == "--":
+            powershell_args.extend(arguments[index + 1:])
+            break
+        if arguments[index] != "--companion" or index + 2 >= len(arguments):
+            raise ValueError("psfile expects --companion <local> <guest-path> entries followed by -- and PowerShell args")
+        companions.append((arguments[index + 1], arguments[index + 2]))
+        index += 3
+    return companions, powershell_args
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__); sys.exit(2)
     cmd = sys.argv[1]
     if cmd == "ping":
-        print(agent({"execute": "guest-ping"}, timeout=10)); return
+        print(agent({"execute": "guest-ping"}, timeout=10)); return 0
     if cmd == "exec":
+        if len(sys.argv) < 3:
+            print("exec requires a program", file=sys.stderr); return 2
         r = guest_exec(sys.argv[2], sys.argv[3:])
-        print(f"[exit {r.get('exitcode')}]")
-        if r.get("stdout"): sys.stdout.write(r["stdout"] + ("" if r["stdout"].endswith("\n") else "\n"))
-        if r.get("stderr"): sys.stderr.write("STDERR:\n" + r["stderr"] + "\n")
-        return
+        return _print_exec_result(r)
+    if cmd == "exec-nowait":
+        if len(sys.argv) < 3:
+            print("exec-nowait requires a program", file=sys.stderr); return 2
+        print(json.dumps(guest_exec(sys.argv[2], sys.argv[3:], wait=False), sort_keys=True))
+        return 0
+    if cmd == "exec-crash":
+        if len(sys.argv) < 3:
+            print("exec-crash requires a program", file=sys.stderr); return 2
+        timeout = int(os.environ.get("BSOD_TRIGGER_CONFIRM_TIMEOUT", "45"))
+        result = guest_exec_crash(sys.argv[2], sys.argv[3:], poll_timeout=timeout)
+        if result.get("disconnected"):
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        return _print_exec_result(result)
     if cmd == "put":
-        n = guest_put(sys.argv[2], sys.argv[3]); print(f"wrote {n} bytes -> {sys.argv[3]}"); return
+        n = guest_put(sys.argv[2], sys.argv[3]); print(f"wrote {n} bytes -> {sys.argv[3]}"); return 0
     if cmd == "get":
-        n = guest_get(sys.argv[2], sys.argv[3]); print(f"read {n} bytes -> {sys.argv[3]}"); return
+        n = guest_get(sys.argv[2], sys.argv[3]); print(f"read {n} bytes -> {sys.argv[3]}"); return 0
     if cmd == "psfile":
+        if len(sys.argv) < 3:
+            print("psfile requires a local PowerShell file", file=sys.stderr); return 2
         local = sys.argv[2]
         guestpath = "C:\\Windows\\Temp\\" + local.replace("\\", "/").split("/")[-1]
-        n = guest_put(local, guestpath); print(f"[uploaded {n}B -> {guestpath}]")
+        try:
+            companions, powershell_args = _psfile_args(sys.argv[3:])
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr); return 2
+        n = guest_put(local, guestpath)
+        sys.stderr.write(f"uploaded {n} bytes -> {guestpath}\n")
+        for companion_local, companion_guest in companions:
+            size = guest_put(companion_local, companion_guest)
+            sys.stderr.write(f"uploaded {size} bytes -> {companion_guest}\n")
         r = guest_exec("powershell.exe",
-                       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", guestpath] + sys.argv[3:],
+                       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", guestpath] + powershell_args,
                        poll_timeout=600)
-        print(f"[exit {r.get('exitcode')}]")
-        if r.get("stdout"): sys.stdout.write(r["stdout"])
-        if r.get("stderr"): sys.stderr.write("STDERR:\n" + r["stderr"])
-        return
-    print("unknown cmd", cmd); sys.exit(2)
+        return _print_exec_result(r)
+    print("unknown cmd", cmd); return 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
