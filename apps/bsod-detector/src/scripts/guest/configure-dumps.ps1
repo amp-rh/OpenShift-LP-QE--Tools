@@ -147,28 +147,9 @@ if (-not $VerifyOnly) {
             & fsutil file createnew $dedicatedPath $sizeBytes | Out-Null
         }
     }
-    # Ensure pagefile is configured — required for Minidump writing alongside DedicatedDumpFile.
-    # VirtIO Balloon driver on KVM blocks AutomaticManagedPagefile creation.
-    # Fix: use explicit fixed-size pagefile (4096MB initial, 8192MB max) which is pre-committed
-    # and not subject to balloon driver memory pressure. This allows Minidump writing.
-    try {
-        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
-        $mmRegPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
-        $currentPaging = (Get-ItemProperty -Path $mmRegPath -Name PagingFiles -ErrorAction SilentlyContinue).PagingFiles
-        $wantedPaging  = 'C:\pagefile.sys 4096 8192'
-        $pagefileOk    = $currentPaging -and ($currentPaging -join ';') -match 'pagefile\.sys\s+\d+'
-        if ($cs.AutomaticManagedPagefile -or -not $pagefileOk) {
-            # Disable automatic management and set explicit fixed-size pagefile
-            Set-CimInstance -InputObject $cs -Property @{ AutomaticManagedPagefile = $false } -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path $mmRegPath -Name PagingFiles -Value @($wantedPaging) -Type MultiString -ErrorAction SilentlyContinue
-            $rebootRequired = $true
-        }
-        if (-not (Test-Path 'C:\pagefile.sys')) {
-            $rebootRequired = $true  # File will be created on next boot
-        }
-    } catch {
-        # Non-fatal — pagefile setup failed; Minidump may not be written but other dumps still work
-    }
+    # Pagefile configuration is a golden image concern (AutomaticManagedPagefile=false must be
+    # pre-set before sealing — VirtIO Balloon driver blocks pagefile.sys creation on KVM).
+    # DedicatedDumpFile handles crash dump staging without pagefile. No pagefile changes here.
     foreach ($k in $desired.Keys) {
         $v = $desired[$k]
         if ($v -is [string]) {
