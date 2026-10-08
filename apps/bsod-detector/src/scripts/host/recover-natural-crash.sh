@@ -536,8 +536,9 @@ done || true
 (
   cd "${outDir}"
   # Generate canonical manifest with no leading "./" so paths match exactly in verification.
-  # sed strips the "  ./" separator produced by sha256sum when run under "cd outDir && find ."
-  find . -type f ! -name '*.tmp' ! -name '*.log' ! -name stage-errors.jsonl ! -name '*-summary.json' ! -name checksums.sha256 -print0 |
+  # Include both regular files and symlinks (sha256sum follows symlinks to hash the target content).
+  # Exclude checksums.sha256 itself (chicken-and-egg), temp files, and summary outputs.
+  find . \( -type f -o -type l \) ! -name '*.tmp' ! -name '*.log' ! -name stage-errors.jsonl ! -name '*-summary.json' ! -name checksums.sha256 -print0 |
     sort -z | xargs -0 sha256sum | sed 's|  \./|  |' > checksums.sha256.tmp
   mv -f checksums.sha256.tmp checksums.sha256; chmod 0600 checksums.sha256
 )

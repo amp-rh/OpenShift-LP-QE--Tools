@@ -420,8 +420,12 @@ def write_summary(args: argparse.Namespace) -> None:
             seen_manifest_paths.add(path_key)
             manifest_hashes[path_key] = parts[0]
 
+    # checksums.sha256 is excluded from its own manifest (chicken-and-egg); skip as artifact too
+    excluded = excluded | {"checksums.sha256"}
+
     for path in sorted(out.rglob("*")):
-        if not path.is_file() or path.name in excluded or path == stage_file:
+        # Skip symlinks — their targets in guestFS_<partition>/ are already covered as real files
+        if not path.is_file() or path.is_symlink() or path.name in excluded or path == stage_file:
             continue
         kind = classify(path)
         if kind is None:
@@ -460,11 +464,13 @@ def write_summary(args: argparse.Namespace) -> None:
             found[kind] += 1
         if not valid:
             invalid.append(record)
-    # Reject orphan manifest entries — entries that reference files not present on disk
+    # Reject orphan manifest entries — entries where the referenced file does not exist on disk.
+    # Compare against actual disk files, not just classified artifacts (unclassified files like
+    # volatility outputs are real files on disk and should not be flagged as orphans).
     if manifest_present and manifest_hashes:
-        artifact_relative_paths = {item["path"] for item in artifacts}
-        for orphan in sorted(set(manifest_hashes.keys()) - artifact_relative_paths):
-            stage_errors.append({"stage": "checksum", "error": f"manifest entry without file: {orphan}"})
+        for orphan in sorted(manifest_hashes.keys()):
+            if not (out / orphan).exists():
+                stage_errors.append({"stage": "checksum", "error": f"manifest entry without file: {orphan}"})
 
     missing = sorted(kind for kind, count in found.items() if count == 0)
     artifact_paths = {item["path"] for item in artifacts}
