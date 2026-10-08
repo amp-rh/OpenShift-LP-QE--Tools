@@ -287,13 +287,10 @@ typeset cfg=''; cfg="$(RunTimed 120 "${guestAgent[@]}" psfile "${configureScript
 # Verify configuration was applied: settings effective (not pending reboot), AutoReboot=0, page file verified adequate
 # CRITICAL: matchesRecommended must be true (settings ARE effective now, not pending)
 # CRITICAL: pageFile.adequate must be explicitly true (not null/"unknown")
-# NOTE: rebootRequired is logged as a warning only — for PoC runs the operator does a manual
-#       virtctl stop/start after first-time configuration. For production, settings must be
-#       baked into the golden image so rebootRequired is always false at pipeline time.
+# CRITICAL: rebootRequired must be false — CrashDumpEnabled and DedicatedDumpFile changes only
+#           take effect after reboot; arming while reboot is pending uses stale settings
 jq -e '.ok == true and .matchesRecommended == true and .current.AutoReboot == 0 and .pageFile.adequate == true' <<<"${cfg}" >/dev/null || Die "guest CrashControl/pagefile prerequisites failed validation (settings must be effective, not pending): ${cfg}"
-if jq -e '.rebootRequired == true' <<<"${cfg}" >/dev/null 2>&1; then
-  Log "WARN: guest dump configuration requires a reboot to take effect (CrashDumpEnabled or pagefile changed) — do: virtctl stop ${vm} -n ${ns} && virtctl start ${vm} -n ${ns}"
-fi
+jq -e '.rebootRequired == false' <<<"${cfg}" >/dev/null || Die "guest dump configuration requires a reboot before arming — do: virtctl stop ${vm} -n ${ns} && virtctl start ${vm} -n ${ns}, then re-run"
 
 # Verify required guest paths exist
 # Checks: C:\Windows (dump destination), C:\Windows\Minidump (minidump directory), NotMyFault (if intentional crash)

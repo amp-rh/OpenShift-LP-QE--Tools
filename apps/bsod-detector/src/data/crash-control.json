@@ -19,9 +19,10 @@
       "LogEvent": 1,
       "AutoReboot": 0,
       "MinidumpDir": "%SystemRoot%\\Minidump",
-      "DumpFile": "%SystemRoot%\\MEMORY.DMP"
+      "DumpFile": "%SystemRoot%\\MEMORY.DMP",
+      "DedicatedDumpFile": "C:\\DedicatedDump.sys"
     },
-    "notes": "CrashDumpEnabled=7 (Automatic, Win8+): Windows writes a kernel-mode memory dump to pagefile then copies to MEMORY.DMP. Also writes a Minidump to %SystemRoot%\\Minidump\\. Smaller than complete (kernel pages only) so a 4-8GB fixed pagefile is sufficient. configure-dumps.ps1 sets an explicit fixed-size pagefile (4096-8192MB) to avoid VirtIO Balloon driver blocking AutomaticManagedPagefile creation. Requires one reboot after initial setup to create pagefile.sys. Full physical memory also captured via KubeVirt vm-memory.elf.tar.gz. AutoReboot=0 keeps VM frozen for evidence collection."
+    "notes": "CrashDumpEnabled=7 (Automatic) + DedicatedDumpFile: VirtIO Balloon driver on KVM blocks pagefile.sys creation. DedicatedDumpFile (pre-allocated to RAM+1MB by configure-dumps.ps1) is used instead of pagefile for crash dump staging — Windows writes MEMORY.DMP via this file with no pagefile required. Minidumps written to %SystemRoot%\\Minidump. Full physical memory also captured via KubeVirt vm-memory.elf.tar.gz. AutoReboot=0 keeps VM frozen."
   },
   "pageFile": {
     "path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management",
