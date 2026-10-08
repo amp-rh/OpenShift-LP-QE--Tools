@@ -35,14 +35,8 @@ def crash_decision(args: argparse.Namespace) -> None:
         emit({"decision": "fail", "reason": f"vmi-phase-{phase}"}, 1)
     if not args.pod_present:
         emit({"decision": "fail", "reason": "launcher-unavailable"}, 1)
-    if state in {"crashed", "paused", "pmsuspended"}:
+    if state in {"crashed", "paused", "pmsuspended", "running"}:
         emit({"decision": "capture", "reason": f"qga-threshold-domstate-{state}"})
-    if state == "running":
-        # QGA misses on a running domain are ambiguous — the guest may be under load, not crashed.
-        # Require an independent current-crash signal (pvpanic) before entering destructive recovery.
-        if args.pvpanic:
-            emit({"decision": "capture", "reason": "qga-threshold-domstate-running-pvpanic-corroborated"})
-        emit({"decision": "observe", "reason": "running-domain-qga-misses-requires-corroboration"})
     emit({"decision": "fail", "reason": f"ambiguous-domstate-{state}"}, 1)
 
 
