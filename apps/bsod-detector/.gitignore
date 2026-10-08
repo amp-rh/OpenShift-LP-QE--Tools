@@ -7,6 +7,17 @@ src/test-driver/libntoskrnl.a
 
 # Runtime output
 output/
+evidence/
+
+# Guestfish/libguestfs and kernel cache files (temporary VM image section objects)
+# Created during offline snapshot inspection and NTFS operations
+# Examples: file.0xd3066f4c1bb0.0xd30674f369a0.ImageSectionObject.*.img
+#           file.0xd3066f4c1bb0.0xd30674f369a0.DataSectionObject.*.dat
+#           file.0xd3066f4c1bb0.0xd30674f369a0.SharedCacheMap.*.vacb
+file.0x*.img
+file.0x*.dat
+file.0x*.vacb
+file.0x*
 
 # Secrets
 .env

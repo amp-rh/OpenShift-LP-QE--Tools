@@ -106,6 +106,10 @@
       "name": "UNEXPECTED_STORE_EXCEPTION",
       "description": "A store component caught an unexpected exception, commonly triggered by a failing disk, corrupt page file, or antivirus interference with store operations."
     },
+    "0x00000161": {
+      "name": "LIVE_SYSTEM_DUMP",
+      "description": "A live kernel memory dump was generated on request (e.g. via NotMyFault, NMI, or diagnostic tooling) without halting the system. Used for intentional BSOD testing."
+    },
     "0x00020001": {
       "name": "HYPERVISOR_ERROR",
       "description": "The hypervisor encountered a fatal error. Common causes include unhandled exceptions during hypercalls (e.g. TLB-flush or IPI delivery) and hardware-enforced alignment faults (split-lock #AC) forwarded as fatal NMIs to the guest."

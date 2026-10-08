@@ -267,8 +267,16 @@ These are set by `src/scripts/crash-injector/prep-guest.ps1` and baked into the 
 
 ### Host prerequisites (for the offline path)
 
-- **podman** with the `bsod-host-tools` image built (run from the repo root):
-  `podman build -t bsod-host-tools -f image/container/bsod-detector/Dockerfile apps/bsod-detector`
+- **podman** with the unified `quay.io/redhatqe/bsod-detector:latest` image.
+  Build through the scoped Makefile with repository-root context and immutable
+  inputs:
+
+  ```bash
+  make -C image/container/bsod-detector build \
+    BASE_IMAGE='<fedora-image@sha256:digest>' \
+    OCP_CLIENT_URL='<url>' OCP_CLIENT_SHA256='<sha256>' \
+    VIRTCTL_URL='<url>' VIRTCTL_SHA256='<sha256>'
+  ```
 - The guest disk must be **readable** by the invoking user and the VM **shut off**.
 
 **Guest script deployment:** In the offline-first flow, no guest-side scripts

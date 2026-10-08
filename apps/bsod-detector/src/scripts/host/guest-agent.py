@@ -2,11 +2,12 @@
 """guest-agent.py -- drive a KubeVirt Windows guest via the qemu-guest-agent.
 
 WHY
-    On a KubeVirt/OpenShift cluster there is no passt SSH to the VM. The guest is
-    reachable through the qemu-guest-agent, which is spoken by `virsh` inside the
-    VM's virt-launcher pod. This wraps that RPC so the BSOD pipeline (stage toolkit,
-    trigger a crash, collect dumps, pull evidence) can run with no SSH and no
-    credentials -- guest-exec runs as `nt authority\\system` (fully elevated).
+    On a KubeVirt/OpenShift cluster there is no direct SSH to the VM without additional
+    network configuration. The guest is reachable through the qemu-guest-agent, which
+    is spoken by `virsh` inside the VM's virt-launcher pod. This wraps that RPC so the
+    BSOD pipeline (stage toolkit, trigger a crash, collect dumps, pull evidence) can
+    run with no SSH and no credentials -- guest-exec runs as `nt authority\\system`
+    (fully elevated).
 
 HOW IT REACHES THE GUEST
     oc exec -n <ns> <virt-launcher-pod> -- \\
@@ -28,15 +29,11 @@ TRANSFER NOTES (learned the hard way)
     - For a large MEMORY.DMP, compress in-guest first (see compress-dump.ps1);
       kernel dumps shrink to ~14% and the transfer runs at ~0.5 MB/s.
 
-CONFIG (all optional -- the target is auto-resolved from the cluster)
-    GA_VM   VM (VirtualMachineInstance) name. If unset, and exactly one VMI is
-            found (in GA_NS if set, else cluster-wide), it is used automatically.
-    GA_NS   namespace. If unset, taken from the auto-detected VMI (or from GA_DOM).
-    GA_DOM  libvirt domain name. Defaults to "<GA_NS>_<GA_VM>".
-    GA_POD  virt-launcher pod. Defaults to the running virt-launcher-<vm>-* pod
-            resolved from the cluster (no more stale hardcoded pod suffixes).
-    Nothing is hardcoded to a particular VM: with a single VMI you can run with no
-    env vars at all; otherwise set GA_VM (and GA_NS if it is ambiguous).
+CONFIG (required for target identification)
+    BSOD_DET__VM__NAME          VM (VirtualMachineInstance) name
+    BSOD_DET__NAMESPACE         namespace containing the VM
+    BSOD_DET__DOMAIN__NAME      (optional) libvirt domain name. Defaults to "<BSOD_DET__NAMESPACE>_<BSOD_DET__VM__NAME>".
+    BSOD_DET__POD__NAME         (optional) virt-launcher pod name. Auto-resolved from cluster if unset.
 """
 import base64
 import gzip
@@ -47,21 +44,28 @@ import subprocess
 import sys
 import time
 
-NS  = os.environ.get("GA_NS")
-VM  = os.environ.get("GA_VM")
-POD = os.environ.get("GA_POD")
-DOM = os.environ.get("GA_DOM")
+NS  = os.environ.get("BSOD_DET__NAMESPACE")
+VM  = os.environ.get("BSOD_DET__VM__NAME")
+POD = os.environ.get("BSOD_DET__POD__NAME")
+DOM = os.environ.get("BSOD_DET__DOMAIN__NAME")
 
 _resolved = False
 
 
 def _oc(args):
-    """Run `oc <args>` and return stripped stdout, or '' on failure."""
-    r = subprocess.run(["oc"] + args, capture_output=True, text=True, check=False)
+    """Execute OpenShift CLI command and return output or empty string on failure."""
+    try:
+        r = subprocess.run(
+            ["oc", "--request-timeout=20s"] + args,
+            capture_output=True, text=True, check=False, timeout=25,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
 def _resolve_pod(ns, vm):
+    """Find the virt-launcher pod for a given VM in a namespace."""
     for line in _oc(["get", "pod", "-n", ns, "-o", "name"]).splitlines():
         name = line.split("/", 1)[-1]
         if name.startswith(f"virt-launcher-{vm}-"):
@@ -70,11 +74,18 @@ def _resolve_pod(ns, vm):
 
 
 def resolve_target():
-    """Fill in NS/VM/DOM/POD from the cluster so nothing has to be hardcoded.
-    Explicit env vars always win; only the missing pieces are looked up."""
+    """Auto-detect and populate namespace, VM, domain name, and pod from the cluster; explicit env vars take precedence."""
     global NS, VM, POD, DOM, _resolved
     if _resolved:
         return
+
+    # CRITICAL: Re-read environment variables in case they were set after module import
+    # This handles cases where variables are exported by parent shell after Python starts
+    NS = NS or os.environ.get("BSOD_DET__NAMESPACE")
+    VM = VM or os.environ.get("BSOD_DET__VM__NAME")
+    POD = POD or os.environ.get("BSOD_DET__POD__NAME")
+    DOM = DOM or os.environ.get("BSOD_DET__DOMAIN__NAME")
+
     # A domain name is "<ns>_<vm>" (k8s names never contain '_') -> back it out.
     if DOM and (not NS or not VM) and "_" in DOM:
         n, v = DOM.split("_", 1)
@@ -90,11 +101,11 @@ def resolve_target():
             NS = NS or n
             VM = v
         elif not rows:
-            sys.exit("guest-agent: no VirtualMachineInstance found; set GA_VM (and GA_NS)")
+            sys.exit("guest-agent: no VirtualMachineInstance found; set BSOD_DET__VM__NAME (and BSOD_DET__NAMESPACE)")
         else:
-            sys.exit("guest-agent: multiple VMs found -- set GA_VM (and GA_NS):\n  " + "\n  ".join(rows))
+            sys.exit("guest-agent: multiple VMs found -- set BSOD_DET__VM__NAME (and BSOD_DET__NAMESPACE):\n  " + "\n  ".join(rows))
     if not NS:
-        sys.exit("guest-agent: namespace unknown; set GA_NS (or GA_DOM=<ns>_<vm>)")
+        sys.exit("guest-agent: namespace unknown; set BSOD_DET__NAMESPACE (or BSOD_DET__DOMAIN__NAME=<ns>_<vm>)")
     if not DOM:
         DOM = f"{NS}_{VM}"
     if not POD:
@@ -105,16 +116,16 @@ def resolve_target():
 
 
 def agent(cmd_obj, timeout=300):
-    """Send one qemu-agent-command and return its 'return' payload."""
+    """Send a QEMU agent command via virsh and return the response payload."""
     resolve_target()
     payload = json.dumps(cmd_obj)
     try:
         out = subprocess.run(
-            ["oc", "exec", "-n", NS, POD, "--",
+            ["oc", "--request-timeout=" + str(timeout) + "s", "exec", "-n", NS, POD, "--",
              "virsh", "qemu-agent-command", "--timeout", str(timeout), DOM, payload],
-            capture_output=True, text=True, check=False, timeout=timeout+30)
+            capture_output=True, text=True, check=False, timeout=timeout + 5)
     except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"oc exec timed out after {timeout+30}s: {e}")
+        raise RuntimeError(f"oc exec timed out after {timeout + 5}s: {e}")
     except Exception as e:
         raise RuntimeError(f"oc exec failed: {e}")
 
@@ -128,8 +139,7 @@ def agent(cmd_obj, timeout=300):
 
 
 def guest_exec(path, args=None, wait=True, poll_timeout=600):
-    """Run a program in the guest. wait=False returns immediately (use when the
-    command is expected to crash the guest, e.g. a BSOD trigger)."""
+    """Execute a program in the guest VM and optionally wait for completion; returns PID, exit code, stdout, and stderr."""
     r = agent({"execute": "guest-exec", "arguments": {
         "path": path, "arg": args or [], "capture-output": True}}, timeout=300)
     pid = r["pid"]
@@ -154,16 +164,38 @@ def guest_exec(path, args=None, wait=True, poll_timeout=600):
     return {"pid": pid, "timeout": True, "message": f"waited {poll_timeout}s without exit"}
 
 
+def guest_exec_crash(path, args=None, poll_timeout=45):
+    """Execute a crash-inducing program and capture its outcome (exit, timeout, or transport loss indicating crash)."""
+    launched = agent({"execute": "guest-exec", "arguments": {
+        "path": path, "arg": args or [], "capture-output": True,
+    }}, timeout=20)
+    pid = launched["pid"]
+    deadline = time.monotonic() + poll_timeout
+    while time.monotonic() < deadline:
+        try:
+            status = agent(
+                {"execute": "guest-exec-status", "arguments": {"pid": pid}},
+                timeout=5,
+            )
+        except RuntimeError as exc:
+            return {"pid": pid, "disconnected": True, "message": str(exc)}
+        if status.get("exited"):
+            out = base64.b64decode(status["out-data"]).decode("utf-8", "replace") if status.get("out-data") else ""
+            err = base64.b64decode(status["err-data"]).decode("utf-8", "replace") if status.get("err-data") else ""
+            return {"pid": pid, "exitcode": status.get("exitcode"), "stdout": out, "stderr": err}
+        time.sleep(1)
+    return {"pid": pid, "timeout": True, "message": f"crash command remained observable for {poll_timeout}s"}
+
+
 def guest_put(local, guestpath):
-    """Upload a local file to the guest via guest-file-write (1.5MB base64 chunks).
-    Supports files up to 2GB+ with optimized chunk sizing for QMP limits."""
+    """Upload a local file to the guest VM using optimized base64-encoded chunks."""
     with open(local, "rb") as fh:
         data = fh.read()
     file_size = len(data)
     handle = agent({"execute": "guest-file-open",
                     "arguments": {"path": guestpath, "mode": "wb"}}, timeout=300)
     try:
-        CH = 1536 * 1024  # 1.5MB chunks (base64 expands to ~2MB in QMP)
+        CH = 512 * 1024  # 512KB chunks (base64 ~683KB; stays within oc exec ARG_MAX)
         for i in range(0, len(data), CH):
             chunk = base64.b64encode(data[i:i + CH]).decode()
             agent({"execute": "guest-file-write",
@@ -180,14 +212,7 @@ def guest_put(local, guestpath):
 
 
 def guest_get(guestpath, local, chunk=3500 * 1024, auto_compress=True):
-    """Download a guest file with intelligent compression for large files.
-
-    Uses 3.5MB chunks (safe margin from 4MB QMP limit). For files >100MB,
-    automatically compresses on guest using gzip, transfers compressed file,
-    then decompresses on host. This reduces transfer time by ~7x for typical
-    MEMORY.DMP files (555MB → 77MB).
-
-    Seek-based + per-chunk retries ensure truncated responses don't desync."""
+    """Download a guest VM file with automatic compression for large files; uses seek-based retries for reliability."""
 
     # For large files, compress on guest first
     compressed_on_guest = False
@@ -271,35 +296,100 @@ def guest_get(guestpath, local, chunk=3500 * 1024, auto_compress=True):
     return total
 
 
+def _print_exec_result(result):
+    """Output guest command results (stdout, stderr) and return the process exit code."""
+    if result.get("stdout"):
+        sys.stdout.write(result["stdout"] + ("" if result["stdout"].endswith("\n") else "\n"))
+    if result.get("stderr"):
+        sys.stderr.write(result["stderr"] + ("" if result["stderr"].endswith("\n") else "\n"))
+    if result.get("timeout"):
+        sys.stderr.write(result.get("message", "guest command timed out") + "\n")
+        return 124
+    exit_code = result.get("exitcode")
+    if exit_code is None:
+        sys.stderr.write("guest command did not report an exit code\n")
+        return 125
+    return int(exit_code)
+
+
+def _psfile_args(arguments):
+    """Parse and separate companion file uploads from PowerShell script arguments."""
+    if arguments and arguments[0] not in {"--companion", "--"}:
+        return [], arguments
+    companions = []
+    powershell_args = []
+    index = 0
+    while index < len(arguments):
+        if arguments[index] == "--":
+            powershell_args.extend(arguments[index + 1:])
+            break
+        if arguments[index] != "--companion" or index + 2 >= len(arguments):
+            raise ValueError("psfile expects --companion <local> <guest-path> entries followed by -- and PowerShell args")
+        companions.append((arguments[index + 1], arguments[index + 2]))
+        index += 3
+    return companions, powershell_args
+
+
 def main():
+    """Parse and dispatch commands to interact with the guest VM.
+
+    Commands:
+      ping                                - Test guest connectivity
+      exec <program> [args...]            - Run a program and wait for output
+      exec-nowait <program> [args...]     - Run a program without waiting
+      exec-crash <program> [args...]      - Run a crash-inducing program
+      put <local> <guestpath>             - Upload a file to the guest
+      get <guestpath> <local>             - Download a file from the guest
+      psfile <script> [--companion ...]   - Upload and run a PowerShell script
+    """
     if len(sys.argv) < 2:
         print(__doc__); sys.exit(2)
     cmd = sys.argv[1]
     if cmd == "ping":
-        print(agent({"execute": "guest-ping"}, timeout=10)); return
+        print(agent({"execute": "guest-ping"}, timeout=10)); return 0
     if cmd == "exec":
+        if len(sys.argv) < 3:
+            print("exec requires a program", file=sys.stderr); return 2
         r = guest_exec(sys.argv[2], sys.argv[3:])
-        print(f"[exit {r.get('exitcode')}]")
-        if r.get("stdout"): sys.stdout.write(r["stdout"] + ("" if r["stdout"].endswith("\n") else "\n"))
-        if r.get("stderr"): sys.stderr.write("STDERR:\n" + r["stderr"] + "\n")
-        return
+        return _print_exec_result(r)
+    if cmd == "exec-nowait":
+        if len(sys.argv) < 3:
+            print("exec-nowait requires a program", file=sys.stderr); return 2
+        print(json.dumps(guest_exec(sys.argv[2], sys.argv[3:], wait=False), sort_keys=True))
+        return 0
+    if cmd == "exec-crash":
+        if len(sys.argv) < 3:
+            print("exec-crash requires a program", file=sys.stderr); return 2
+        timeout = int(os.environ.get("BSOD_TRIGGER_CONFIRM_TIMEOUT", "45"))
+        result = guest_exec_crash(sys.argv[2], sys.argv[3:], poll_timeout=timeout)
+        if result.get("disconnected"):
+            print(json.dumps(result, sort_keys=True))
+            return 0
+        return _print_exec_result(result)
     if cmd == "put":
-        n = guest_put(sys.argv[2], sys.argv[3]); print(f"wrote {n} bytes -> {sys.argv[3]}"); return
+        n = guest_put(sys.argv[2], sys.argv[3]); print(f"wrote {n} bytes -> {sys.argv[3]}"); return 0
     if cmd == "get":
-        n = guest_get(sys.argv[2], sys.argv[3]); print(f"read {n} bytes -> {sys.argv[3]}"); return
+        n = guest_get(sys.argv[2], sys.argv[3]); print(f"read {n} bytes -> {sys.argv[3]}"); return 0
     if cmd == "psfile":
+        if len(sys.argv) < 3:
+            print("psfile requires a local PowerShell file", file=sys.stderr); return 2
         local = sys.argv[2]
         guestpath = "C:\\Windows\\Temp\\" + local.replace("\\", "/").split("/")[-1]
-        n = guest_put(local, guestpath); print(f"[uploaded {n}B -> {guestpath}]")
+        try:
+            companions, powershell_args = _psfile_args(sys.argv[3:])
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr); return 2
+        n = guest_put(local, guestpath)
+        sys.stderr.write(f"uploaded {n} bytes -> {guestpath}\n")
+        for companion_local, companion_guest in companions:
+            size = guest_put(companion_local, companion_guest)
+            sys.stderr.write(f"uploaded {size} bytes -> {companion_guest}\n")
         r = guest_exec("powershell.exe",
-                       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", guestpath] + sys.argv[3:],
+                       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", guestpath] + powershell_args,
                        poll_timeout=600)
-        print(f"[exit {r.get('exitcode')}]")
-        if r.get("stdout"): sys.stdout.write(r["stdout"])
-        if r.get("stderr"): sys.stderr.write("STDERR:\n" + r["stderr"])
-        return
-    print("unknown cmd", cmd); sys.exit(2)
+        return _print_exec_result(r)
+    print("unknown cmd", cmd); return 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

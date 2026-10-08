@@ -22,6 +22,10 @@
 .PARAMETER VerifyOnly
     Report current settings without modifying the registry.
 
+.PARAMETER DataFile
+    Explicit path to crash-control.json. Required when the script is staged
+    outside its repository layout (for example through qemu-guest-agent).
+
 .OUTPUTS
     A single JSON object to stdout:
     {
@@ -38,20 +42,27 @@
 [CmdletBinding()]
 param(
     [string]$DumpType,
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [string]$DataFile
 )
 
 # --- standalone helpers (no Common.ps1 dependency) ---
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..'))
-$script:DataDir  = Join-Path $script:RepoRoot 'src\data'
+$script:DataFile = $DataFile
+if (-not $script:DataFile) {
+    $repoCandidate = Join-Path $PSScriptRoot '..\..\..'
+    if (Test-Path $repoCandidate) {
+        $script:DataFile = Join-Path (Resolve-Path $repoCandidate) 'src\data\crash-control.json'
+    }
+}
 
 function Get-BsodData {
     <# .SYNOPSIS Load a source-of-truth JSON file from data/. #>
     param([Parameter(Mandatory)][string]$Name)
-    $p = Join-Path $script:DataDir $Name
+    $p = if ($Name -eq 'crash-control.json') { $script:DataFile } else { $null }
+    if (-not $p) { throw "No explicit data path is configured for $Name" }
     if (-not (Test-Path $p)) { throw "Data file not found: $p" }
     Get-Content -Raw -Path $p | ConvertFrom-Json
 }
@@ -125,6 +136,20 @@ if (-not $VerifyOnly) {
         Fail 'configure-dumps.ps1 must run elevated (Administrator) to write CrashControl.' 3
     }
     if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+    # Pre-create DedicatedDumpFile sized to full physical RAM + 1MB — guarantees
+    # enough space for any dump type without depending on pagefile configuration.
+    if ($desired.Contains('DedicatedDumpFile') -and $desired['DedicatedDumpFile']) {
+        $dedicatedPath = [Environment]::ExpandEnvironmentVariables($desired['DedicatedDumpFile'])
+        if (-not (Test-Path $dedicatedPath)) {
+            $ramBytes = $null
+            try { $ramBytes = [int64](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory } catch { }
+            $sizeBytes = if ($ramBytes) { $ramBytes + 1MB } else { 17179869184 }  # RAM+1MB or 16Gi fallback
+            & fsutil file createnew $dedicatedPath $sizeBytes | Out-Null
+        }
+    }
+    # Pagefile configuration is a golden image concern (AutomaticManagedPagefile=false must be
+    # pre-set before sealing — VirtIO Balloon driver blocks pagefile.sys creation on KVM).
+    # DedicatedDumpFile handles crash dump staging without pagefile. No pagefile changes here.
     foreach ($k in $desired.Keys) {
         $v = $desired[$k]
         if ($v -is [string]) {
@@ -136,8 +161,10 @@ if (-not $VerifyOnly) {
     }
     $action  = 'applied'
     $applied = $desired
-    # A change to the dump type (CrashDumpEnabled) only takes effect after reboot.
-    $rebootRequired = -not (Values-Match $currentBefore['CrashDumpEnabled'] $typeEnabledValue)
+    # Cumulative reboot logic: preserve any reboot requirement set earlier in this function
+    # (e.g., pagefile or AutomaticManagedPagefile change) — do not overwrite with a fresh assignment.
+    # A change to CrashDumpEnabled only takes effect after reboot.
+    $rebootRequired = $rebootRequired -or (-not (Values-Match $currentBefore['CrashDumpEnabled'] $typeEnabledValue))
 }
 
 # 5. Re-read the live values (post-apply, or unchanged under -VerifyOnly).

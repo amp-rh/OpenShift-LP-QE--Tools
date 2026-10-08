@@ -1,5 +1,11 @@
 # BSOD Detector Toolkit — Architecture Overview (CGQE-801)
 
+> The current automated reliability path is RHOV/KubeVirt-only and fail closed.
+> It is documented in [`rhov-reliability.md`](rhov-reliability.md). The older KVM
+> tools described below remain standalone development utilities and are not
+> runtime fallbacks for the RHOV watcher. Current reliability behavior is proven
+> with fixtures/mocks, not a live cluster.
+
 **One line:** An automatic crash investigator for Windows VMs — it **detects** a BSOD/freeze,
 **captures** a screenshot + crash dumps, and **analyzes** the cause, saving everything as
 structured JSON. ~5,000 lines. Author: hjoshi · 2026-08-25.

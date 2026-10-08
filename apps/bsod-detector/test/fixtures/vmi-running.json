@@ -1,0 +1,11 @@
+{
+  "apiVersion": "kubevirt.io/v1",
+  "kind": "VirtualMachineInstance",
+  "metadata": {"name": "fixture-vm", "namespace": "fixture-ns"},
+  "spec": {
+    "volumes": [
+      {"name": "rootdisk", "persistentVolumeClaim": {"claimName": "fixture-rootdisk"}}
+    ]
+  },
+  "status": {"phase": "Running", "nodeName": "fixture-node"}
+}

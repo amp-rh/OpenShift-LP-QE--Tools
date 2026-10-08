@@ -23,22 +23,22 @@ teardown() {
   [[ "$output" == *"--data-dir"* ]]
 }
 
-@test "extract-evtx.py emits valid JSON with no input files" {
+@test "extract-evtx.py fails closed with valid JSON when no input files are provided" {
   run python3 "$EXTRACT_EVTX" --data-dir "$DATA_DIR"
-  [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.ok == true'
+  [ "$status" -ne 0 ]
+  echo "$output" | jq -e '.ok == false'
   echo "$output" | jq -e '.crash.detected == false'
-  echo "$output" | jq -e '.warnings | length > 0'
+  echo "$output" | jq -e '.error | contains("no .evtx files")'
 }
 
-@test "extract-evtx.py warns on nonexistent evtx file" {
+@test "extract-evtx.py fails on nonexistent evtx file" {
   run python3 "$EXTRACT_EVTX" --data-dir "$DATA_DIR" /nonexistent.evtx
-  [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.warnings[] | select(contains("not found"))'
+  [ "$status" -ne 0 ]
+  echo "$output" | jq -e '.ok == false and (.error | contains("not found"))'
 }
 
 @test "extract-evtx.py output has required top-level keys" {
   run python3 "$EXTRACT_EVTX" --data-dir "$DATA_DIR"
-  [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.ok and (.crash | type == "object") and (.events | type == "array") and (.warnings | type == "array")'
+  [ "$status" -ne 0 ]
+  echo "$output" | jq -e '(.ok == false) and (.crash | type == "object") and (.events | type == "array") and (.warnings | type == "array")'
 }
