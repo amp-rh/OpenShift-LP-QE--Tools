@@ -430,6 +430,44 @@ else
   Log "WARN: no EventLog files could be extracted from any partition"
 fi
 
+# Extract Minidump files from C:\Windows\Minidump\ on each NTFS partition
+# Minidumps are small (~256KB) per-crash dumps written alongside the main dump
+Log "searching for Minidump files in C:\\Windows\\Minidump\\ ..."
+typeset minidumpOk=0
+if ((${#ntfsPartitions[@]} > 0)); then
+  for partition in "${ntfsPartitions[@]}"; do
+    typeset minidumpList
+    minidumpList=$(Oc exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+      bash -c "guestfish --ro -a /dev/vda run : mount-ro '${partition}' / : find /Windows/Minidump -name '*.dmp' : umount-all" \
+      2>>"${extractionLog}") || true
+    while IFS= read -r dmpFile; do
+      [[ -z "${dmpFile}" ]] && continue
+      Log "extracting Minidump: ${dmpFile} from ${partition}"
+      if ExtractNTFSFile "${partition}" "C:${dmpFile}" "${outDir}"; then
+        minidumpOk=1
+      fi
+    done <<< "${minidumpList}"
+  done
+fi
+
+# Create flat Minidump/ directory with direct copies for tools expecting that structure
+if ((minidumpOk)); then
+  mkdir -p "${outDir}/Minidump"
+  for partition in "${ntfsPartitions[@]}"; do
+    typeset partitionId="${partition##*/}"
+    typeset minidumpSrcDir="${outDir}/guestFS_${partitionId}/Windows/Minidump"
+    if [[ -d "${minidumpSrcDir}" ]]; then
+      find "${minidumpSrcDir}" -name '*.dmp' -type f | while read -r dmpSrc; do
+        typeset dmpName="${dmpSrc##*/}"
+        [[ ! -f "${outDir}/Minidump/${dmpName}" ]] && cp "${dmpSrc}" "${outDir}/Minidump/${dmpName}" && chmod 0600 "${outDir}/Minidump/${dmpName}"
+      done
+    fi
+  done
+  Log "✅ Minidump files extracted to Minidump/"
+else
+  Log "WARN: no Minidump files found — pagefile.sys may be unavailable (VirtIO Balloon driver blocks pagefile on KVM)"
+fi
+
 typeset parseStatus=0
 # Skip dump parsing if parse-dump-header.json already exists from watch-crash.sh (elf2dmp conversion)
 if [[ -s "${outDir}/parse-dump-header.json" ]]; then

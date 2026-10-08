@@ -147,14 +147,20 @@ if (-not $VerifyOnly) {
             & fsutil file createnew $dedicatedPath $sizeBytes | Out-Null
         }
     }
-    # Ensure pagefile is configured — required for Minidump writing (CrashDumpEnabled=7/3).
-    # DedicatedDumpFile handles complete/kernel dump staging but NOT Minidump generation.
-    # Use AutomaticManagedPagefile=true — Windows manages size automatically for CrashDumpEnabled=7,
-    # and correctly creates pagefile.sys on next boot. Manual 0,0 is ignored on Windows Server 2022.
+    # Ensure pagefile is configured — required for Minidump writing alongside DedicatedDumpFile.
+    # VirtIO Balloon driver on KVM blocks AutomaticManagedPagefile creation.
+    # Fix: use explicit fixed-size pagefile (4096MB initial, 8192MB max) which is pre-committed
+    # and not subject to balloon driver memory pressure. This allows Minidump writing.
     try {
         $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
-        if (-not $cs.AutomaticManagedPagefile) {
-            Set-CimInstance -InputObject $cs -Property @{ AutomaticManagedPagefile = $true } -ErrorAction SilentlyContinue
+        $mmRegPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
+        $currentPaging = (Get-ItemProperty -Path $mmRegPath -Name PagingFiles -ErrorAction SilentlyContinue).PagingFiles
+        $wantedPaging  = 'C:\pagefile.sys 4096 8192'
+        $pagefileOk    = $currentPaging -and ($currentPaging -join ';') -match 'pagefile\.sys\s+\d+'
+        if ($cs.AutomaticManagedPagefile -or -not $pagefileOk) {
+            # Disable automatic management and set explicit fixed-size pagefile
+            Set-CimInstance -InputObject $cs -Property @{ AutomaticManagedPagefile = $false } -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $mmRegPath -Name PagingFiles -Value @($wantedPaging) -Type MultiString -ErrorAction SilentlyContinue
             $rebootRequired = $true
         }
         if (-not (Test-Path 'C:\pagefile.sys')) {

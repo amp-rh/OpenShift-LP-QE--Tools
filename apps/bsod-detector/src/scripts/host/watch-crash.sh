@@ -445,7 +445,12 @@ function CrashResponse () {
   fi  # memory download failure is non-fatal — recovery extracts from ODF snapshot
   CaptureHostSignals || failed=1
   ((failed == 0)) || { [[ -z "${progressPid}" ]] || { kill "${progressPid}" 2>/dev/null || true; wait "${progressPid}" 2>/dev/null || true; progressPid=''; }; WriteSummary || true; return 1; }
-  WaitDumpMonitor || { WriteSummary || true; return 1; }
+  # Dump monitor failure is non-fatal when the primary memory artifact was already captured.
+  # A frozen QEMU cannot respond to virsh domstats, causing monitor timeout even on a valid capture.
+  if ! WaitDumpMonitor; then
+    Log "WARN: dump progress monitor did not confirm completion — proceeding to recovery (captured memory artifact may still be valid)"
+    RecordError dump-completion 'dump progress monitor failed; recovery will validate artifact integrity'
+  fi
   # Wait for Windows event logs to stabilize (file size stops changing) before snapshot
   Log "waiting for Windows event logs to flush and stabilize..."
   typeset evtxStableCount=0 evtxDeadline=$((SECONDS + 600))
