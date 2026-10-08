@@ -174,8 +174,10 @@ if (-not $VerifyOnly) {
     }
     $action  = 'applied'
     $applied = $desired
-    # A change to the dump type (CrashDumpEnabled) only takes effect after reboot.
-    $rebootRequired = -not (Values-Match $currentBefore['CrashDumpEnabled'] $typeEnabledValue)
+    # Cumulative reboot logic: preserve any reboot requirement set earlier in this function
+    # (e.g., pagefile or AutomaticManagedPagefile change) — do not overwrite with a fresh assignment.
+    # A change to CrashDumpEnabled only takes effect after reboot.
+    $rebootRequired = $rebootRequired -or (-not (Values-Match $currentBefore['CrashDumpEnabled'] $typeEnabledValue))
 }
 
 # 5. Re-read the live values (post-apply, or unchanged under -VerifyOnly).

@@ -277,20 +277,22 @@ function ExtractNTFSFilesParallel () {
   return 0
 }
 
-# Verify source PVC is not attached to any other VMI before extraction
-Log "verifying source PVC ${guestPvc} is not attached to other VMI..."
+# Verify source PVC is not attached to any VMI — check both direct PVC references and DataVolume-backed references.
+# API errors are treated as blocking: uncertain attachment state must prevent extraction.
+Log "verifying source PVC ${guestPvc} is not attached to any VMI (direct or DataVolume-backed)..."
+typeset vmiListJson
+vmiListJson="$(Oc get vmi -n "${ns}" -o json)" || Die "cannot list VMIs in namespace ${ns} — API error prevents safe PVC attachment verification"
 typeset attachedVmis
-attachedVmis=$(Oc get vmi -n "${ns}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | while read vmi; do
-  if Oc get vmi "${vmi}" -n "${ns}" -o jsonpath='{.spec.volumes[*].persistentVolumeClaim.claimName}' 2>/dev/null | grep -q "^${guestPvc}\$"; then
-    echo "${vmi}"
-  fi
-done)
+attachedVmis="$(jq -r --arg pvc "${guestPvc}" \
+  '.items[] | select(
+    (.spec.volumes // [] | map(.persistentVolumeClaim.claimName // "", .dataVolume.name // "") | any(. == $pvc))
+  ) | .metadata.name' <<<"${vmiListJson}")" || Die "cannot parse VMI list — PVC attachment state uncertain"
 if [[ -n "${attachedVmis}" ]]; then
-  Log "ERROR: source PVC ${guestPvc} is already attached to: ${attachedVmis}"
-  RecordError extraction "source PVC is attached to running VMI; cannot safely mount"
+  Log "ERROR: source PVC ${guestPvc} is still attached to: ${attachedVmis}"
+  RecordError extraction "source PVC is attached to a VMI (direct or DataVolume); cannot safely mount"
   exit 1
 fi
-Log "verified source PVC ${guestPvc} is not attached to any running VMI"
+Log "verified source PVC ${guestPvc} is not attached to any VMI"
 
 # Create guestfs-ntfs extraction pod using public quay.io image (NTFS support via oadp-vmfr-access)
 # Uses same security context as verified working pod: runAsNonRoot:true, fsGroup, seccompProfile
@@ -411,7 +413,11 @@ if ((${#ntfsPartitions[@]} > 0)); then
   done
   if [ -n "${firstPartition}" ]; then
     mkdir -p "${outDir}/EventLogs"
-    ln -sf ../guestFS_${firstPartition}/Windows/System32/winevt/Logs/*.evtx "${outDir}/EventLogs/" 2>/dev/null || true
+    # Link exact extracted files (not glob) so broken links are impossible for missing files
+    for _evtxName in System.evtx Application.evtx Security.evtx; do
+      typeset _evtxSrc="${outDir}/guestFS_${firstPartition}/Windows/System32/winevt/Logs/${_evtxName}"
+      [[ -f "${_evtxSrc}" ]] && ln -sf "../guestFS_${firstPartition}/Windows/System32/winevt/Logs/${_evtxName}" "${outDir}/EventLogs/${_evtxName}" || true
+    done
   fi
 else
   Log "WARN: no NTFS partitions discovered — skipping file extraction"
@@ -442,12 +448,11 @@ if RunTimed 120 "${extractEvtxBin}" --data-dir "${BSOD_DET__DATA__DIR:-$(cd "${s
   if jq -e '.ok == true' "${outDir}/events.json" >/dev/null 2>&1; then
     Log "EVTX parsed successfully"
   else
-    Log "WARN: EVTX parser reported semantic failure — falling back to individual EVTX JSON files"
-    jq -n '{"ok":true,"note":"extract-evtx reported failure; see EventLogs/System.json and EventLogs/Application.json for full event data","events":[]}' > "${outDir}/events.json"
+    RecordError evtx-parse 'EVTX parser reported semantic failure'
   fi
 else
-  Log "WARN: EVTX parser failed or timed out — falling back to individual EVTX JSON files"
-  jq -n '{"ok":true,"note":"extract-evtx failed; see EventLogs/System.json and EventLogs/Application.json for full event data","events":[]}' > "${outDir}/events.json"
+  RecordError evtx-parse 'EVTX parser failed or timed out'
+  jq -n '{"ok":false,"error":"extract-evtx failed or timed out","events":[]}' > "${outDir}/events.json"
 fi
 
 # Parse individual EVTX files to JSON using python-evtx (uses high-level Evtx.Evtx API
@@ -492,8 +497,10 @@ done || true
 
 (
   cd "${outDir}"
+  # Generate canonical manifest with no leading "./" so paths match exactly in verification.
+  # sed strips the "  ./" separator produced by sha256sum when run under "cd outDir && find ."
   find . -type f ! -name '*.tmp' ! -name '*.log' ! -name stage-errors.jsonl ! -name '*-summary.json' ! -name checksums.sha256 -print0 |
-    sort -z | xargs -0 sha256sum > checksums.sha256.tmp
+    sort -z | xargs -0 sha256sum | sed 's|  \./|  |' > checksums.sha256.tmp
   mv -f checksums.sha256.tmp checksums.sha256; chmod 0600 checksums.sha256
 )
 typeset cleanupStatus=0; Cleanup || cleanupStatus=$?

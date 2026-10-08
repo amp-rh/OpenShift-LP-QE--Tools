@@ -35,8 +35,14 @@ def crash_decision(args: argparse.Namespace) -> None:
         emit({"decision": "fail", "reason": f"vmi-phase-{phase}"}, 1)
     if not args.pod_present:
         emit({"decision": "fail", "reason": "launcher-unavailable"}, 1)
-    if state in {"crashed", "paused", "pmsuspended", "running"}:
+    if state in {"crashed", "paused", "pmsuspended"}:
         emit({"decision": "capture", "reason": f"qga-threshold-domstate-{state}"})
+    if state == "running":
+        # QGA misses on a running domain are ambiguous — the guest may be under load, not crashed.
+        # Require an independent current-crash signal (pvpanic) before entering destructive recovery.
+        if args.pvpanic:
+            emit({"decision": "capture", "reason": "qga-threshold-domstate-running-pvpanic-corroborated"})
+        emit({"decision": "observe", "reason": "running-domain-qga-misses-requires-corroboration"})
     emit({"decision": "fail", "reason": f"ambiguous-domstate-{state}"}, 1)
 
 
@@ -88,13 +94,12 @@ def advance_progress(state: dict, current: int, idle_samples: int) -> dict:
         else:
             status, reason = "waiting", "quiescing"
     else:
-        # No writes observed since baseline. Windows may have completed MEMORY.DMP
-        # before the guest agent died (common with AutoReboot=0 + hardware-level freeze).
-        # After idle_samples consecutive no-progress samples, treat as pre-quiescent (dump already done).
-        # CRITICAL: Allows pre-written dumps that complete before monitoring starts.
+        # No writes observed since baseline. Cannot confirm dump is complete without
+        # observed write progress or an independent current-run completion signal.
+        # Require observedProgress=True for completion (Finding 6: effective dump completion).
         state["idleSamples"] += 1
         if state["idleSamples"] >= idle_samples:
-            status, reason = "complete", "pre-quiescent-at-baseline"
+            status, reason = "failure", "no-write-progress-observed"
         else:
             status, reason = "waiting", "no-progress-observed"
     state["last"] = current
@@ -256,24 +261,47 @@ def artifact_type(path: Path, requested: str) -> tuple[bool, str]:
             return _validate_ppm(data), "ppm"
         return False, "unknown"
     if requested == "memory":
-        # virtctl memory-dump download produces a tar.gz archive containing
-        # a single *.memory.dump ELF ET_CORE file. Read 2048 decompressed bytes:
-        # first 512 = directory entry header, next 512 = file entry header,
-        # bytes 1024+ = start of the ELF file content.
+        # virtctl memory-dump download produces a tar.gz archive containing exactly one
+        # *.memory.dump ELF ET_CORE file.  Validate the full archive structure:
+        # consume gzip to EOF (detects truncation), parse tar members (validates structure),
+        # enforce exactly one .memory.dump member, and check ELF header and phdr extents.
         if data[:2] == b"\x1f\x8b":
-            import gzip
+            import tarfile
             try:
-                with gzip.open(str(path), "rb") as gz:
-                    inner = gz.read(2048)
-                # Layout: 512-byte tar dir header + 512-byte file header + ELF content
-                elf_bytes = inner[1024:1024 + 64]
+                # r:gz streams the whole archive — truncated gzip raises EOFError/TarError
+                with tarfile.open(str(path), "r:gz") as tar:
+                    members = tar.getmembers()
+                dump_members = [m for m in members if m.isfile() and m.name.endswith(".memory.dump")]
+                if len(dump_members) != 1:
+                    return False, f"tar.gz[expected-1-dump-member,got-{len(dump_members)}]"
+                member = dump_members[0]
+                if member.size < 64:
+                    return False, "tar.gz[elf-too-small]"
+                # Read ELF header from the member (second open — stream is exhausted after getmembers)
+                with tarfile.open(str(path), "r:gz") as tar:
+                    ef = tar.extractfile(member)
+                    if ef is None:
+                        return False, "tar.gz[member-unreadable]"
+                    elf_bytes = ef.read(64)
                 if len(elf_bytes) < 64 or elf_bytes[:4] != b"\x7fELF":
                     return False, "tar.gz[not-elf]"
                 elf_class = elf_bytes[4]
                 elf_type = struct.unpack_from("<H", elf_bytes, 0x10)[0]
                 if elf_class not in {1, 2} or elf_type != 4:  # ET_CORE
                     return False, "tar.gz[elf-not-core]"
+                # Validate program-header table is within declared member size
+                order = "<" if elf_bytes[5] == 1 else ">"
+                if elf_class == 2:
+                    ph_offset = struct.unpack_from(order + "Q", elf_bytes, 0x20)[0]
+                    ph_entry_size, ph_count = struct.unpack_from(order + "HH", elf_bytes, 0x36)
+                else:
+                    ph_offset = struct.unpack_from(order + "I", elf_bytes, 0x1C)[0]
+                    ph_entry_size, ph_count = struct.unpack_from(order + "HH", elf_bytes, 0x2A)
+                if ph_count == 0 or ph_offset + ph_entry_size * ph_count > member.size:
+                    return False, "tar.gz[elf-phdr-outside-member]"
                 return True, "tar.gz[elf]"
+            except (tarfile.TarError, EOFError, OSError, struct.error):
+                return False, "tar.gz-corrupt"
             except Exception:
                 return False, "tar.gz-corrupt"
         return _validate_elf(path, data), "elf"
@@ -372,16 +400,31 @@ def write_summary(args: argparse.Namespace) -> None:
     found = {kind: 0 for kind in required}
     excluded = {"evidence-summary.json", "recovery-summary.json"}
 
-    # Load checksums.sha256 manifest if present for validation
+    # Load and strictly validate checksums.sha256 manifest (fail closed).
+    # Canonical path format: no leading "./" — matches sha256sum output after stripping.
+    # Reject: malformed entries, duplicate paths, mismatched hashes, uncovered files.
     manifest_hashes: dict[str, str] = {}
     manifest_path = out / "checksums.sha256"
-    if manifest_path.exists():
-        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+    manifest_present = manifest_path.exists()
+    if manifest_present:
+        seen_manifest_paths: set[str] = set()
+        for line_num, line in enumerate(manifest_path.read_text(encoding="utf-8").splitlines(), 1):
             if not line.strip() or line.startswith("#"):
                 continue
             parts = line.split(maxsplit=1)
-            if len(parts) == 2:
-                manifest_hashes[parts[1].strip()] = parts[0].strip()
+            if len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{64}", parts[0]):
+                stage_errors.append({"stage": "checksum", "error": f"malformed manifest entry at line {line_num}"})
+                continue
+            # Canonical path: strip any leading "./" or "/"
+            path_key = parts[1].strip().lstrip("./").lstrip("/")
+            if not path_key:
+                stage_errors.append({"stage": "checksum", "error": f"empty path in manifest at line {line_num}"})
+                continue
+            if path_key in seen_manifest_paths:
+                stage_errors.append({"stage": "checksum", "error": f"duplicate manifest entry: {path_key}"})
+                continue
+            seen_manifest_paths.add(path_key)
+            manifest_hashes[path_key] = parts[0]
 
     for path in sorted(out.rglob("*")):
         if not path.is_file() or path.name in excluded or path == stage_file:
@@ -397,12 +440,16 @@ def write_summary(args: argparse.Namespace) -> None:
                 valid = False
                 semantic_error = "stage-result-reports-failure"
 
-        # Verify against manifest if present
+        # Verify against manifest — every artifact file must have a manifest entry (fail closed).
         actual_hash = sha256_file(path)
         relative_path = str(path.relative_to(out))
-        if relative_path in manifest_hashes and manifest_hashes[relative_path] != actual_hash:
-            valid = False
-            semantic_error = "manifest-hash-mismatch"
+        if manifest_present:
+            if relative_path not in manifest_hashes:
+                valid = False
+                semantic_error = semantic_error or "manifest-entry-missing"
+            elif manifest_hashes[relative_path] != actual_hash:
+                valid = False
+                semantic_error = "manifest-hash-mismatch"
 
         record = {
             "path": relative_path,
@@ -419,6 +466,12 @@ def write_summary(args: argparse.Namespace) -> None:
             found[kind] += 1
         if not valid:
             invalid.append(record)
+    # Reject orphan manifest entries — entries that reference files not present on disk
+    if manifest_present and manifest_hashes:
+        artifact_relative_paths = {item["path"] for item in artifacts}
+        for orphan in sorted(set(manifest_hashes.keys()) - artifact_relative_paths):
+            stage_errors.append({"stage": "checksum", "error": f"manifest entry without file: {orphan}"})
+
     missing = sorted(kind for kind, count in found.items() if count == 0)
     artifact_paths = {item["path"] for item in artifacts}
     for filename in sorted(REQUIRED_RESULT_FILES.get(args.mode, set())):

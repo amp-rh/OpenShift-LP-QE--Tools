@@ -249,13 +249,15 @@ EOF
   [[ "${dlPath}" == /* ]] || dlPath="/${dlPath}"
 
   # 5. Port-forward the export service to localhost (avoids API server HTTP/2 limits)
+  # Register pfPid immediately so Cleanup() can kill it if we exit early for any reason.
   oc port-forward "svc/${svcName}" -n "${ns}" "18443:443" >>"${pipelineLog}" 2>&1 &
   pfPid=$!; sleep 3
 
   # 6. Resumable download via curl --continue-at -
   # Each GOAWAY just resumes from the last byte — accumulates progress across drops.
-  # Bounded retries: max 10 attempts over ~300s (30s per attempt + 3s sleep)
-  typeset dlAttempt=0; typeset maxAttempts=10; typeset dlDeadline=$((SECONDS + 600))
+  # Bounded retries: max 10 attempts with a 600s overall deadline.
+  # Track success explicitly so a successful attempt 10 is not misread as failure.
+  typeset dlAttempt=0; typeset maxAttempts=10; typeset dlDeadline=$((SECONDS + 600)); typeset dlSuccess=0
   while ((dlAttempt < maxAttempts && SECONDS < dlDeadline)); do
     dlAttempt=$((dlAttempt + 1))
     set +x
@@ -264,12 +266,12 @@ EOF
         --continue-at - --output "${temporary}" \
         "https://localhost:18443${dlPath}" >>"${pipelineLog}" 2>&1; then
       set -x
-      break
+      dlSuccess=1; break
     fi
     set -x
     typeset dlSz; dlSz=$(stat -c%s "${temporary}" 2>/dev/null || echo 0)
     Log "memory download attempt ${dlAttempt}/${maxAttempts} interrupted at $((dlSz / 1024 / 1024)) MiB — resuming..."
-    ((dlAttempt < maxAttempts)) || break
+    ((dlAttempt < maxAttempts && SECONDS < dlDeadline)) || break
     sleep 3
     # Re-establish port-forward if the previous one died
     if ! kill -0 "${pfPid}" 2>/dev/null; then
@@ -277,10 +279,11 @@ EOF
       pfPid=$!; sleep 3
     fi
   done
-  ((dlAttempt < maxAttempts)) || { RecordError memory "memory download failed after ${maxAttempts} attempts"; return 1; }
-
   kill "${pfPid}" 2>/dev/null || true; pfPid=''
   Oc delete virtualmachineexport "${exportName}" -n "${ns}" --ignore-not-found >>"${pipelineLog}" 2>&1 || true
+  if ((dlSuccess == 0)); then
+    RecordError memory "memory download failed after ${dlAttempt} attempt(s) or deadline exceeded"; return 1
+  fi
 
   # 7. Validate and finalise
   if ! RunTimed 60 python3 "${scriptDir}/reliability.py" validate-artifact --type memory --path "${temporary}" >/dev/null; then
