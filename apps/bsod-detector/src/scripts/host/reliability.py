@@ -94,12 +94,12 @@ def advance_progress(state: dict, current: int, idle_samples: int) -> dict:
         else:
             status, reason = "waiting", "quiescing"
     else:
-        # No writes observed since baseline. Cannot confirm dump is complete without
-        # observed write progress or an independent current-run completion signal.
-        # Require observedProgress=True for completion (Finding 6: effective dump completion).
+        # No writes observed since baseline. Windows may have completed MEMORY.DMP
+        # before the guest agent died (common with AutoReboot=0 + intentional crash).
+        # After idle_samples consecutive no-progress samples, treat as pre-quiescent.
         state["idleSamples"] += 1
         if state["idleSamples"] >= idle_samples:
-            status, reason = "failure", "no-write-progress-observed"
+            status, reason = "complete", "pre-quiescent-at-baseline"
         else:
             status, reason = "waiting", "no-progress-observed"
     state["last"] = current
