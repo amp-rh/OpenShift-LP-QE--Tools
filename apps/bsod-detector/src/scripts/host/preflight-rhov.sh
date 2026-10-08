@@ -280,7 +280,7 @@ done
 [[ "${pingOk}" == 1 ]] || Die 'qemu guest agent ping failed after 5 retries'
 
 # Configure Windows dump settings: upload PowerShell script to guest
-# Script enables CrashDumpEnabled=1 (complete kernel dump to C:\Windows\MEMORY.DMP) and validates page file
+# Script enables CrashDumpEnabled=7 (automatic kernel dump to C:\Windows\MEMORY.DMP + Minidump) and validates page file
 typeset cfg=''; cfg="$(RunTimed 120 "${guestAgent[@]}" psfile "${configureScript}" \
   --companion "${crashControlFile}" 'C:\Windows\Temp\crash-control.json' -- \
   -DataFile 'C:\Windows\Temp\crash-control.json')" || Die 'guest crash-dump configuration failed'

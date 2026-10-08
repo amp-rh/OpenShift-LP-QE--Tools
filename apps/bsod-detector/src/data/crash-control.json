@@ -11,9 +11,9 @@
     "filtered":  { "CrashDumpEnabled": 11, "description": "Variable size. Filters out VM host/guest memory overhead, making offline extraction faster than full complete dumps on high-RAM servers." }
   },
   "recommended": {
-    "crashDumpType": "complete",
+    "crashDumpType": "automatic",
     "values": {
-      "CrashDumpEnabled": 1,
+      "CrashDumpEnabled": 7,
       "AlwaysKeepMemoryDump": 1,
       "Overwrite": 1,
       "LogEvent": 1,
@@ -21,7 +21,7 @@
       "MinidumpDir": "%SystemRoot%\\Minidump",
       "DumpFile": "%SystemRoot%\\MEMORY.DMP"
     },
-    "notes": "CrashDumpEnabled=1 (complete dump) writes the entire physical memory to DedicatedDumpFile (C:\\DedicatedDump.sys, pre-allocated to RAM+1MB). DedicatedDumpFile replaces pagefile for complete/kernel dumps — no pagefile.sys required. KVM VMs with balloon driver cannot create pagefile; DedicatedDumpFile is the only viable on-disk dump mechanism. Extracted as DedicatedDump.dmp during NTFS extraction. Full physical memory also captured via KubeVirt elf.tar.gz. AutoReboot=0 keeps VM frozen."
+    "notes": "CrashDumpEnabled=7 (Automatic, Win8+): Windows writes a kernel-mode memory dump to pagefile then copies to MEMORY.DMP. Also writes a Minidump to %SystemRoot%\\Minidump\\. Smaller than complete (kernel pages only) so a 4-8GB fixed pagefile is sufficient. configure-dumps.ps1 sets an explicit fixed-size pagefile (4096-8192MB) to avoid VirtIO Balloon driver blocking AutomaticManagedPagefile creation. Requires one reboot after initial setup to create pagefile.sys. Full physical memory also captured via KubeVirt vm-memory.elf.tar.gz. AutoReboot=0 keeps VM frozen for evidence collection."
   },
   "pageFile": {
     "path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management",
