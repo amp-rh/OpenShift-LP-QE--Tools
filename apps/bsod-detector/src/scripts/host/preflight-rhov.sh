@@ -215,6 +215,33 @@ typeset storageSize=''; storageSize="$(jq -r '.spec.resources.requests.storage /
 # Block mode required because recovery pod needs raw block device access for snapshots
 [[ "${volumeMode}" == Block && -n "${storageClass}" && -n "${storageSize}" ]] || Die 'snapshot recovery requires a Block-mode guest PVC with storage class and requested size'
 
+# Ensure memory-dump PVC exists: create if missing with same size and storage class as guest disk
+function EnsureMemoryDumpPVC () {
+  typeset pvc="${1:?}"; typeset ns="${2:?}"; typeset storageClass="${3:?}"; typeset storageSize="${4:?}"
+  # Check if PVC already exists
+  if Oc get pvc "${pvc}" -n "${ns}" &>/dev/null 2>&1; then
+    echo "memory-dump PVC ${pvc} already exists"
+    return 0
+  fi
+  # Create memory-dump PVC if missing (same size and storage class as guest disk, Filesystem mode)
+  echo "creating memory-dump PVC ${pvc} with ${storageSize} in storage class ${storageClass}"
+  jq -n --arg name "${pvc}" --arg ns "${ns}" --arg sc "${storageClass}" --arg size "${storageSize}" \
+    '{apiVersion:"v1",kind:"PersistentVolumeClaim",metadata:{name:$name,namespace:$ns},spec:{accessModes:["ReadWriteOnce"],storageClassName:$sc,resources:{requests:{storage:$size}},volumeMode:"Filesystem"}}' |
+    Oc apply -f - 2>&1 || Die "failed to create memory-dump PVC ${pvc}"
+  # Poll until PVC is Bound (timeout 120 seconds)
+  typeset deadline=$((SECONDS + 120)); typeset phase=''
+  while ((SECONDS < deadline)); do
+    phase="$(Oc get pvc "${pvc}" -n "${ns}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    [[ "${phase}" == Bound ]] && return 0
+    echo "waiting for PVC ${pvc} to bind (current phase: ${phase})"
+    sleep 5
+  done
+  Die "memory-dump PVC ${pvc} failed to bind within 120 seconds"
+}
+
+# Ensure memory-dump PVC exists before proceeding with validation
+EnsureMemoryDumpPVC "${memoryPvc}" "${ns}" "${storageClass}" "${storageSize}"
+
 # Validate memory-dump PVC: separate PVC, Filesystem mode, must be Bound and ready
 typeset memoryPvcJson=''; memoryPvcJson="$(Oc get pvc "${memoryPvc}" -n "${ns}" -o json)" || Die "cannot read memory-dump PVC ${memoryPvc}"
 [[ "${memoryPvc}" != "${guestPvc}" ]] || Die 'memory-dump PVC must be distinct from the guest system disk'
