@@ -160,7 +160,7 @@ evidence-summary.json        (final pipeline verdict)
 - Recovery image must be digest-pinned (`@sha256:[64 hex chars]`)
 - Evidence volume kind must be `pvc`, `network`, or `csi` (hostPath/emptyDir forbidden)
 - Evidence storage ID must be stable (alphanumeric + safe chars)
-- Snapshot class, memory dump PVC both required
+- Snapshot class required; memory dump PVC is **auto-created if missing**
 - `BSOD_DET__COMMAND__TIMEOUT` must be a positive integer
 
 **2. Helper scripts present**
@@ -180,7 +180,11 @@ evidence-summary.json        (final pipeline verdict)
 - VM `runStrategy` must be `Manual` (not `Always` — would auto-restart after BSOD)
 - Exactly one running `virt-launcher` pod must exist for the VM
 - Guest PVC must be `Block` mode with storage class and size (required for snapshot recovery)
-- Memory dump PVC must be `Bound`, `Filesystem` mode, and different from the guest PVC
+- **Memory dump PVC auto-creation**: If the named memory-dump PVC doesn't exist, preflight creates it with:
+  - Size: **same as guest disk PVC** (dynamically detected)
+  - Storage class: **same as guest disk PVC** (dynamically detected)
+  - Access mode: `ReadWriteOnce`, `Filesystem` mode
+  - Waits up to 120 seconds for the new PVC to bind before continuing
 - Snapshot class driver must match the guest PVC provisioner
 
 **5. Recovery image capability probe**
