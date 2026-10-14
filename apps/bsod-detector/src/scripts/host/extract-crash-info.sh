@@ -17,15 +17,15 @@ while (($#)); do
   case "$1" in
     --metadata) metadataFile="${2:?}"; shift 2 ;;
     --out) outDir="${2:?}"; shift 2 ;;
-    -h|--help) echo 'usage: recover-natural-crash.sh --metadata PRE_STOP_METADATA.json --out VALIDATED_RUN_DIR'; exit 0 ;;
-    *) echo "recover-natural-crash: unknown argument: $1" >&2; exit 2 ;;
+    -h|--help) echo 'usage: extract-crash-info.sh --metadata PRE_STOP_METADATA.json --out VALIDATED_RUN_DIR'; exit 0 ;;
+    *) echo "extract-crash-info: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[[ -r "${metadataFile}" && -n "${outDir}" ]] || { echo 'recover-natural-crash: --metadata and --out are required' >&2; exit 2; }
+[[ -r "${metadataFile}" && -n "${outDir}" ]] || { echo 'extract-crash-info: --metadata and --out are required' >&2; exit 2; }
 
 # Helper function definitions
 # Die — print a fatal error to stderr and exit.
-function Die () { echo "recover-natural-crash: ERROR: $*" >&2; exit 1; }
+function Die () { echo "extract-crash-info: ERROR: $*" >&2; exit 1; }
 # RunTimed — execute command with timeout: TERM after <seconds>, force KILL after 5 more seconds
 function RunTimed () { typeset seconds="${1:?}"; shift; timeout --signal=TERM --kill-after=5 "${seconds}" "$@"; }
 # Oc — run kubectl with configured timeout and request timeout
@@ -49,7 +49,7 @@ typeset identityMarker="${expectedTarget}/.bsod-storage-identity"
 
 # Check identity marker first - if present, allow test/dev mode without distinct mount requirement
 if [[ -f "${identityMarker}" && ! -L "${identityMarker}" && "$(<"${identityMarker}")" == "${storageId}" ]]; then
-  echo "recover-natural-crash: evidence storage validated (identity marker present, test mode)"
+  echo "extract-crash-info: evidence storage validated (identity marker present, test mode)"
   testMode=1
 fi
 
