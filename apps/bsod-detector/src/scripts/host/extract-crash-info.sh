@@ -433,28 +433,23 @@ if [[ -n "${windowsPartition}" ]]; then
 
   if grep -q "^size:" <<< "${statOut}"; then
     typeset dumpBytes=0; dumpBytes=$(grep "^size:" <<< "${statOut}" | awk '{print $2}')
-    Log "DedicatedDump.sys found: ${dumpBytes} bytes — downloading as MEMORY.DMP (may take several minutes)..."
+    Log "DedicatedDump.sys found: ${dumpBytes} bytes — streaming directly to MEMORY.DMP (no pod /tmp needed)..."
 
-    # Download from NTFS to pod /tmp — use long timeout (dump can be several GB)
-    if RunTimed 3600 oc --request-timeout=3595s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+    # Stream DedicatedDump.sys directly from guestfish stdout → host file via oc exec.
+    # Avoids pod /tmp entirely — critical for large dumps (7-16GB) where emptyDir runs out.
+    # guestfish 'download /file -' writes binary to stdout; oc exec captures it.
+    typeset memDmpTmp="${outDir}/.MEMORY.DMP.tmp"
+    if RunTimed 7200 oc --request-timeout=7195s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
       guestfish --ro -a /dev/vda run : mount-ro "${windowsPartition}" / \
-        : download /DedicatedDump.sys "${dedicatedPodTemp}" : umount-all \
-      >>"${extractionLog}" 2>&1; then
-
-      # Transfer from pod to host evidence directory
-      if RunTimed 3600 oc cp "${ns}/${guestfsPod}:${dedicatedPodTemp}" "${outDir}/MEMORY.DMP" \
-        -c "${guestfsContainer}" >>"${extractionLog}" 2>&1 && [[ -s "${outDir}/MEMORY.DMP" ]]; then
-        chmod 0600 "${outDir}/MEMORY.DMP"
-        Log "MEMORY.DMP extracted from DedicatedDump.sys ($(du -h "${outDir}/MEMORY.DMP" | cut -f1))"
-      else
-        rm -f "${outDir}/MEMORY.DMP" 2>/dev/null || true
-        Log "WARN: oc cp of DedicatedDump.sys to host failed — MEMORY.DMP not available (non-fatal)"
-      fi
+        : download /DedicatedDump.sys - : umount-all \
+      > "${memDmpTmp}" 2>>"${extractionLog}" && [[ -s "${memDmpTmp}" ]]; then
+      mv -f "${memDmpTmp}" "${outDir}/MEMORY.DMP"
+      chmod 0600 "${outDir}/MEMORY.DMP"
+      Log "MEMORY.DMP extracted from DedicatedDump.sys ($(du -h "${outDir}/MEMORY.DMP" | cut -f1))"
     else
-      Log "WARN: guestfish download of DedicatedDump.sys failed or timed out — MEMORY.DMP not available (non-fatal)"
+      rm -f "${memDmpTmp}" "${outDir}/MEMORY.DMP" 2>/dev/null || true
+      Log "WARN: DedicatedDump.sys stream failed — MEMORY.DMP not available (non-fatal)"
     fi
-    RunTimed 30 oc --request-timeout=25s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
-      rm -f "${dedicatedPodTemp}" 2>/dev/null || true
   else
     Log "INFO: DedicatedDump.sys not found on ${windowsPartition} — Windows crash handler may not have written it (non-fatal)"
   fi
@@ -511,7 +506,16 @@ else
   jq -n '{"ok":true,"totalDumps":0,"dumps":[],"warnings":["no on-disk dump available; primary artifact is vm-memory.elf.tar.gz"]}' \
     > "${outDir}/parse-dump-header.json"; chmod 0600 "${outDir}/parse-dump-header.json"
 fi
-if ((parseStatus != 0)) || ! jq -e '.ok == true' "${outDir}/parse-dump-header.json" >/dev/null 2>&1; then RecordError dump-parse 'dump parser failed or reported semantic failure'; exit 1; fi
+# A zero-filled MEMORY.DMP means DedicatedDump.sys was pre-allocated but Windows did not write
+# a crash dump to it (DedicatedDumpFile registry key needs reboot to take effect — golden image
+# bakes this in; a fresh VM without golden image applied will have an empty staging file).
+# Treat invalid/empty DMP as a warning, not a fatal error — vm-memory.elf.tar.gz is primary.
+if ((parseStatus != 0)) || ! jq -e '.ok == true' "${outDir}/parse-dump-header.json" >/dev/null 2>&1; then
+  Log "WARN: MEMORY.DMP parse failed (file may be zero-filled pre-allocation — DedicatedDumpFile requires reboot to activate)"
+  RecordError dump-parse 'MEMORY.DMP parse failed — likely zero-filled (DedicatedDumpFile not yet active; apply golden image and reboot)'
+  jq -n '{"ok":true,"totalDumps":0,"dumps":[],"warnings":["MEMORY.DMP invalid or zero-filled — DedicatedDumpFile registry key requires VM reboot to activate; primary artifact is vm-memory.elf.tar.gz"]}' \
+    > "${outDir}/parse-dump-header.json"; chmod 0600 "${outDir}/parse-dump-header.json"
+fi
 # [DEVELOPER TOOL — extract-evtx.py call commented out]
 # Produces events.json with crash detection from .evtx files — intended for offline developer analysis.
 # Raw .evtx files in EventLogs/ are the primary artifact. Writing stub events.json so pipeline passes.

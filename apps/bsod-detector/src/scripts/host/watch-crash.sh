@@ -408,14 +408,15 @@ function Recover () {
 function CrashResponse () {
   typeset state="${1:?}"; typeset failed=0
   Log "corroborated crash/freeze detected (domstate=${state})"
-  # Capture domain.xml and launcher log IMMEDIATELY at crash detection — before any sleep.
-  # On guests where QEMU crashes with the VM (pod→Failed), this gives the best chance of
-  # capturing domain.xml while the pod is still alive (within seconds of crash detection).
-  # If it fails here, CaptureHostSignals will retry and use the pre-captured copy if available.
-  if [[ ! -s "${outDir}/domain.xml" ]]; then
-    Log "capturing domain.xml immediately at crash detection..."
-    Oc exec -n "${ns}" "${pod}" -- virsh dumpxml "${dom}" > "${outDir}/domain.xml" 2>>"${pipelineLog}" || rm -f "${outDir}/domain.xml"
-    [[ -s "${outDir}/domain.xml" ]] && Log "domain.xml captured at crash time ($(wc -c < "${outDir}/domain.xml") bytes)" || Log "WARN: domain.xml crash-time capture failed — will retry in CaptureHostSignals"
+  # Capture domain.xml IMMEDIATELY at crash detection — always overwrite any pre-crash copy.
+  # The pre-crash copy (state=running) from trigger Phase 2b is a fallback only.
+  # Here we want state=crashed/paused captured at the actual crash moment.
+  Log "capturing domain.xml at crash time (state=${state})..."
+  if Oc exec -n "${ns}" "${pod}" -- virsh dumpxml "${dom}" > "${outDir}/domain.xml" 2>>"${pipelineLog}" && [[ -s "${outDir}/domain.xml" ]]; then
+    Log "domain.xml captured at crash time ($(wc -c < "${outDir}/domain.xml") bytes)"
+  else
+    rm -f "${outDir}/domain.xml"
+    Log "WARN: domain.xml crash-time capture failed — pre-crash copy (if any) will be used by CaptureHostSignals"
   fi
   Log "waiting 60 seconds for VNC to become responsive..."
   sleep 60

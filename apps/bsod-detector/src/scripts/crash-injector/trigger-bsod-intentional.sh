@@ -105,6 +105,13 @@ timeout --signal=TERM --kill-after=5 30 oc --request-timeout=25s exec -n "${ns}"
   echo "trigger-bsod-intentional: domain.xml pre-captured ($(wc -c < "${outDir}/domain.xml") bytes)" || \
   echo "trigger-bsod-intentional: WARN: domain.xml pre-capture failed (non-fatal)"
 
+# Always capture VMI spec via Kubernetes API — available even when pod is Failed/OOMKilled.
+# Contains identical VM configuration (CPU, memory, devices) to domain.xml.
+timeout --signal=TERM --kill-after=5 15 oc --request-timeout=10s get vmi "${vm}" -n "${ns}" -o json \
+  > "${outDir}/vmi-spec.json" 2>/dev/null && \
+  echo "trigger-bsod-intentional: vmi-spec.json captured (always available via Kubernetes API)" || \
+  echo "trigger-bsod-intentional: WARN: vmi-spec.json capture failed (non-fatal)"
+
 # Phase 2c: Upload NotMyFault binary — runs after preflight so QGA is confirmed working
 # Skipped if binary already present with correct size (golden image pre-installs it).
 typeset nmfGuestSize; nmfGuestSize="$(timeout --signal=TERM --kill-after=5 15 python3 "${hostDir}/guest-agent.py" exec powershell.exe -NoProfile -Command \
