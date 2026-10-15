@@ -414,6 +414,54 @@ else
   Log "WARN: no EventLog files could be extracted from any partition"
 fi
 
+# DedicatedDump.sys → MEMORY.DMP offline extraction (AutoReboot=0 workaround)
+# With AutoReboot=0 the VM freezes at BSOD — Windows writes crash data to DedicatedDump.sys
+# but never copies it to MEMORY.DMP (that copy happens during post-crash reboot).
+# WaitDumpMonitor (watch-crash.sh) already confirmed disk writes stabilised before VM was stopped,
+# so the file is fully written and no longer locked. We copy it offline via guestfs.
+# Uses windowsPartition detected by the EventLog extraction phase above — never hardcoded.
+# Non-fatal: missing file or transfer failure is logged as WARN and pipeline continues.
+if [[ -n "${windowsPartition}" ]]; then
+  Log "checking for DedicatedDump.sys on ${windowsPartition} (AutoReboot=0 → MEMORY.DMP workaround)..."
+  typeset dedicatedPodTemp="/tmp/bsod-deddump-$$-${RANDOM}.bin"
+
+  # stat the file first to confirm it exists without triggering a large download
+  typeset statOut=''
+  statOut=$(RunTimed 120 oc --request-timeout=115s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+    guestfish --ro -a /dev/vda run : mount-ro "${windowsPartition}" / : stat /DedicatedDump.sys : umount-all \
+    2>>"${extractionLog}") || statOut=''
+
+  if grep -q "^size:" <<< "${statOut}"; then
+    typeset dumpBytes=0; dumpBytes=$(grep "^size:" <<< "${statOut}" | awk '{print $2}')
+    Log "DedicatedDump.sys found: ${dumpBytes} bytes — downloading as MEMORY.DMP (may take several minutes)..."
+
+    # Download from NTFS to pod /tmp — use long timeout (dump can be several GB)
+    if RunTimed 3600 oc --request-timeout=3595s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+      guestfish --ro -a /dev/vda run : mount-ro "${windowsPartition}" / \
+        : download /DedicatedDump.sys "${dedicatedPodTemp}" : umount-all \
+      >>"${extractionLog}" 2>&1; then
+
+      # Transfer from pod to host evidence directory
+      if RunTimed 3600 oc cp "${ns}/${guestfsPod}:${dedicatedPodTemp}" "${outDir}/MEMORY.DMP" \
+        -c "${guestfsContainer}" >>"${extractionLog}" 2>&1 && [[ -s "${outDir}/MEMORY.DMP" ]]; then
+        chmod 0600 "${outDir}/MEMORY.DMP"
+        Log "MEMORY.DMP extracted from DedicatedDump.sys ($(du -h "${outDir}/MEMORY.DMP" | cut -f1))"
+      else
+        rm -f "${outDir}/MEMORY.DMP" 2>/dev/null || true
+        Log "WARN: oc cp of DedicatedDump.sys to host failed — MEMORY.DMP not available (non-fatal)"
+      fi
+    else
+      Log "WARN: guestfish download of DedicatedDump.sys failed or timed out — MEMORY.DMP not available (non-fatal)"
+    fi
+    RunTimed 30 oc --request-timeout=25s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+      rm -f "${dedicatedPodTemp}" 2>/dev/null || true
+  else
+    Log "INFO: DedicatedDump.sys not found on ${windowsPartition} — Windows crash handler may not have written it (non-fatal)"
+  fi
+else
+  Log "INFO: Windows partition not identified — skipping DedicatedDump.sys extraction"
+fi
+
 # [BLOCKED] Minidump extraction — pagefile.sys cannot be created on KVM with VirtIO Balloon driver.
 # Windows never writes Minidumps without pagefile. Re-enable when pagefile is confirmed on platform.
 # Log "searching for Minidump files in C:\\Windows\\Minidump\\ ..."
