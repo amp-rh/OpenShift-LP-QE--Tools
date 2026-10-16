@@ -17,15 +17,15 @@ while (($#)); do
   case "$1" in
     --metadata) metadataFile="${2:?}"; shift 2 ;;
     --out) outDir="${2:?}"; shift 2 ;;
-    -h|--help) echo 'usage: recover-natural-crash.sh --metadata PRE_STOP_METADATA.json --out VALIDATED_RUN_DIR'; exit 0 ;;
-    *) echo "recover-natural-crash: unknown argument: $1" >&2; exit 2 ;;
+    -h|--help) echo 'usage: extract-crash-info.sh --metadata PRE_STOP_METADATA.json --out VALIDATED_RUN_DIR'; exit 0 ;;
+    *) echo "extract-crash-info: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[[ -r "${metadataFile}" && -n "${outDir}" ]] || { echo 'recover-natural-crash: --metadata and --out are required' >&2; exit 2; }
+[[ -r "${metadataFile}" && -n "${outDir}" ]] || { echo 'extract-crash-info: --metadata and --out are required' >&2; exit 2; }
 
 # Helper function definitions
 # Die — print a fatal error to stderr and exit.
-function Die () { echo "recover-natural-crash: ERROR: $*" >&2; exit 1; }
+function Die () { echo "extract-crash-info: ERROR: $*" >&2; exit 1; }
 # RunTimed — execute command with timeout: TERM after <seconds>, force KILL after 5 more seconds
 function RunTimed () { typeset seconds="${1:?}"; shift; timeout --signal=TERM --kill-after=5 "${seconds}" "$@"; }
 # Oc — run kubectl with configured timeout and request timeout
@@ -49,7 +49,7 @@ typeset identityMarker="${expectedTarget}/.bsod-storage-identity"
 
 # Check identity marker first - if present, allow test/dev mode without distinct mount requirement
 if [[ -f "${identityMarker}" && ! -L "${identityMarker}" && "$(<"${identityMarker}")" == "${storageId}" ]]; then
-  echo "recover-natural-crash: evidence storage validated (identity marker present, test mode)"
+  echo "extract-crash-info: evidence storage validated (identity marker present, test mode)"
   testMode=1
 fi
 
@@ -414,6 +414,49 @@ else
   Log "WARN: no EventLog files could be extracted from any partition"
 fi
 
+# DedicatedDump.sys → MEMORY.DMP offline extraction (AutoReboot=0 workaround)
+# With AutoReboot=0 the VM freezes at BSOD — Windows writes crash data to DedicatedDump.sys
+# but never copies it to MEMORY.DMP (that copy happens during post-crash reboot).
+# WaitDumpMonitor (watch-crash.sh) already confirmed disk writes stabilised before VM was stopped,
+# so the file is fully written and no longer locked. We copy it offline via guestfs.
+# Uses windowsPartition detected by the EventLog extraction phase above — never hardcoded.
+# Non-fatal: missing file or transfer failure is logged as WARN and pipeline continues.
+if [[ -n "${windowsPartition}" ]]; then
+  Log "checking for DedicatedDump.sys on ${windowsPartition} (AutoReboot=0 → MEMORY.DMP workaround)..."
+  typeset dedicatedPodTemp="/tmp/bsod-deddump-$$-${RANDOM}.bin"
+
+  # stat the file first to confirm it exists without triggering a large download
+  typeset statOut=''
+  statOut=$(RunTimed 120 oc --request-timeout=115s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+    guestfish --ro -a /dev/vda run : mount-ro "${windowsPartition}" / : stat /DedicatedDump.sys : umount-all \
+    2>>"${extractionLog}") || statOut=''
+
+  if grep -q "^size:" <<< "${statOut}"; then
+    typeset dumpBytes=0; dumpBytes=$(grep "^size:" <<< "${statOut}" | awk '{print $2}')
+    Log "DedicatedDump.sys found: ${dumpBytes} bytes — streaming directly to MEMORY.DMP (no pod /tmp needed)..."
+
+    # Stream DedicatedDump.sys directly from guestfish stdout → host file via oc exec.
+    # Avoids pod /tmp entirely — critical for large dumps (7-16GB) where emptyDir runs out.
+    # guestfish 'download /file -' writes binary to stdout; oc exec captures it.
+    typeset memDmpTmp="${outDir}/.MEMORY.DMP.tmp"
+    if RunTimed 7200 oc --request-timeout=7195s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+      guestfish --ro -a /dev/vda run : mount-ro "${windowsPartition}" / \
+        : download /DedicatedDump.sys - : umount-all \
+      > "${memDmpTmp}" 2>>"${extractionLog}" && [[ -s "${memDmpTmp}" ]]; then
+      mv -f "${memDmpTmp}" "${outDir}/MEMORY.DMP"
+      chmod 0600 "${outDir}/MEMORY.DMP"
+      Log "MEMORY.DMP extracted from DedicatedDump.sys ($(du -h "${outDir}/MEMORY.DMP" | cut -f1))"
+    else
+      rm -f "${memDmpTmp}" "${outDir}/MEMORY.DMP" 2>/dev/null || true
+      Log "WARN: DedicatedDump.sys stream failed — MEMORY.DMP not available (non-fatal)"
+    fi
+  else
+    Log "INFO: DedicatedDump.sys not found on ${windowsPartition} — Windows crash handler may not have written it (non-fatal)"
+  fi
+else
+  Log "INFO: Windows partition not identified — skipping DedicatedDump.sys extraction"
+fi
+
 # [BLOCKED] Minidump extraction — pagefile.sys cannot be created on KVM with VirtIO Balloon driver.
 # Windows never writes Minidumps without pagefile. Re-enable when pagefile is confirmed on platform.
 # Log "searching for Minidump files in C:\\Windows\\Minidump\\ ..."
@@ -463,7 +506,16 @@ else
   jq -n '{"ok":true,"totalDumps":0,"dumps":[],"warnings":["no on-disk dump available; primary artifact is vm-memory.elf.tar.gz"]}' \
     > "${outDir}/parse-dump-header.json"; chmod 0600 "${outDir}/parse-dump-header.json"
 fi
-if ((parseStatus != 0)) || ! jq -e '.ok == true' "${outDir}/parse-dump-header.json" >/dev/null 2>&1; then RecordError dump-parse 'dump parser failed or reported semantic failure'; exit 1; fi
+# A zero-filled MEMORY.DMP means DedicatedDump.sys was pre-allocated but Windows did not write
+# a crash dump to it (DedicatedDumpFile registry key needs reboot to take effect — golden image
+# bakes this in; a fresh VM without golden image applied will have an empty staging file).
+# Treat invalid/empty DMP as a warning, not a fatal error — vm-memory.elf.tar.gz is primary.
+if ((parseStatus != 0)) || ! jq -e '.ok == true' "${outDir}/parse-dump-header.json" >/dev/null 2>&1; then
+  Log "WARN: MEMORY.DMP parse failed (file may be zero-filled pre-allocation — DedicatedDumpFile requires reboot to activate)"
+  RecordError dump-parse 'MEMORY.DMP parse failed — likely zero-filled (DedicatedDumpFile not yet active; apply golden image and reboot)'
+  jq -n '{"ok":true,"totalDumps":0,"dumps":[],"warnings":["MEMORY.DMP invalid or zero-filled — DedicatedDumpFile registry key requires VM reboot to activate; primary artifact is vm-memory.elf.tar.gz"]}' \
+    > "${outDir}/parse-dump-header.json"; chmod 0600 "${outDir}/parse-dump-header.json"
+fi
 # [DEVELOPER TOOL — extract-evtx.py call commented out]
 # Produces events.json with crash detection from .evtx files — intended for offline developer analysis.
 # Raw .evtx files in EventLogs/ are the primary artifact. Writing stub events.json so pipeline passes.

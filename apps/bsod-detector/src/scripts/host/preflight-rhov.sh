@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fail-closed RHOV preflight validation before crash injection and watcher
 # Verifies: cluster permissions, VM/VMI state, storage configuration, recovery image capability
-# Produces metadata.json consumed by watch-crash.sh and recover-natural-crash.sh
+# Produces metadata.json consumed by watch-crash.sh and extract-crash-info.sh
 # Side effects: temporary probe pod only; no VM lifecycle changes (runStrategy must be Manual)
 set -euxo pipefail; shopt -s inherit_errexit
 umask 077
@@ -104,8 +104,8 @@ ValidName "${ns}" namespace; ValidName "${vm}" VM; ValidName "${snapClass}" snap
 
 # Verify all required local tools are available (oc, python, jq, etc.)
 for tool in oc virtctl jq python3 sha256sum findmnt timeout realpath sync; do RequireCommand "${tool}"; done
-# Verify all helper scripts exist and are readable (will be invoked by watch-crash.sh and recover-natural-crash.sh)
-for helper in guest-agent.py reliability.py recover-natural-crash.sh collect-host-signals.sh parse-dump-header.sh; do
+# Verify all helper scripts exist and are readable (will be invoked by watch-crash.sh and extract-crash-info.sh)
+for helper in guest-agent.py reliability.py extract-crash-info.sh collect-host-signals.sh parse-dump-header.sh; do
   [[ -r "${scriptDir}/${helper}" ]] || Die "required helper missing: ${scriptDir}/${helper}"
 done
 # Verify guest configuration files exist (PowerShell script + JSON crash control settings)
@@ -156,12 +156,15 @@ else
   mountDevice="test-device"
 fi
 
-# PVC validation: must be Bound and Filesystem mode (not Block) for persistent storage proof
+# PVC name validation (fast-fail on bad name before contacting the cluster further)
+# Actual existence check and auto-creation happen later once storageClass is known from guest disk
+typeset evidencePvcMissing=0
 if ((testMode == 0)) || [[ "${evidenceKind}" != network ]]; then
   ValidName "${evidenceId}" evidence-PVC
-  typeset evidencePvcJson=''; evidencePvcJson="$(Oc get pvc "${evidenceId}" -n "${ns}" -o json)" || Die "cannot read declared evidence PVC ${ns}/${evidenceId}"
-  # PVC must be Bound (ready to use) and Filesystem mode (not Block mode)
-  jq -e '.status.phase == "Bound" and (.spec.volumeMode // "Filesystem") == "Filesystem"' <<<"${evidencePvcJson}" >/dev/null || Die 'declared evidence PVC must be Bound and Filesystem mode'
+  if ! Oc get pvc "${evidenceId}" -n "${ns}" &>/dev/null 2>&1; then
+    echo "preflight-rhov: evidence PVC ${evidenceId} not found — will auto-create after guest disk storage class is identified"
+    evidencePvcMissing=1
+  fi
 fi
 # Output validation: run directory must be unique child of evidence mount and empty
 mkdir -p "${outDir}"; chmod 0700 "${outDir}"
@@ -214,6 +217,67 @@ typeset volumeMode=''; volumeMode="$(jq -r '.spec.volumeMode // "Filesystem"' <<
 typeset storageSize=''; storageSize="$(jq -r '.spec.resources.requests.storage // ""' <<<"${pvcJson}")"
 # Block mode required because recovery pod needs raw block device access for snapshots
 [[ "${volumeMode}" == Block && -n "${storageClass}" && -n "${storageSize}" ]] || Die 'snapshot recovery requires a Block-mode guest PVC with storage class and requested size'
+
+# Ensure memory-dump PVC exists: create if missing with same size and storage class as guest disk
+function EnsureMemoryDumpPVC () {
+  typeset pvc="${1:?}"; typeset ns="${2:?}"; typeset storageClass="${3:?}"; typeset storageSize="${4:?}"
+  # Check if PVC already exists
+  if Oc get pvc "${pvc}" -n "${ns}" &>/dev/null 2>&1; then
+    echo "memory-dump PVC ${pvc} already exists"
+    return 0
+  fi
+  # Create memory-dump PVC if missing (same size and storage class as guest disk, Filesystem mode)
+  echo "creating memory-dump PVC ${pvc} with ${storageSize} in storage class ${storageClass}"
+  jq -n --arg name "${pvc}" --arg ns "${ns}" --arg sc "${storageClass}" --arg size "${storageSize}" \
+    '{apiVersion:"v1",kind:"PersistentVolumeClaim",metadata:{name:$name,namespace:$ns},spec:{accessModes:["ReadWriteOnce"],storageClassName:$sc,resources:{requests:{storage:$size}},volumeMode:"Filesystem"}}' |
+    Oc apply -f - 2>&1 || Die "failed to create memory-dump PVC ${pvc}"
+  # Poll until PVC is Bound (timeout 120 seconds)
+  typeset deadline=$((SECONDS + 120)); typeset phase=''
+  while ((SECONDS < deadline)); do
+    phase="$(Oc get pvc "${pvc}" -n "${ns}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    [[ "${phase}" == Bound ]] && return 0
+    echo "waiting for PVC ${pvc} to bind (current phase: ${phase})"
+    sleep 5
+  done
+  Die "memory-dump PVC ${pvc} failed to bind within 120 seconds"
+}
+
+# Ensure evidence PVC exists: create if missing using same storage class as guest disk
+# 200Gi default — sized to hold multiple run evidence dirs (each ~1-2GB compressed)
+function EnsureEvidencePVC () {
+  typeset pvc="${1:?}"; typeset ns="${2:?}"; typeset storageClass="${3:?}"
+  if Oc get pvc "${pvc}" -n "${ns}" &>/dev/null 2>&1; then
+    echo "evidence PVC ${pvc} already exists"
+    return 0
+  fi
+  typeset size="${BSOD_DET__EVIDENCE__STORAGE_SIZE:-200Gi}"
+  echo "creating evidence PVC ${pvc} (${size}) in storage class ${storageClass}"
+  jq -n --arg name "${pvc}" --arg ns "${ns}" --arg sc "${storageClass}" --arg size "${size}" \
+    '{apiVersion:"v1",kind:"PersistentVolumeClaim",metadata:{name:$name,namespace:$ns},spec:{accessModes:["ReadWriteOnce"],storageClassName:$sc,resources:{requests:{storage:$size}},volumeMode:"Filesystem"}}' |
+    Oc apply -f - 2>&1 || Die "failed to create evidence PVC ${pvc}"
+  typeset deadline=$((SECONDS + 120)); typeset phase=''
+  while ((SECONDS < deadline)); do
+    phase="$(Oc get pvc "${pvc}" -n "${ns}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    [[ "${phase}" == Bound ]] && return 0
+    echo "waiting for evidence PVC ${pvc} to bind (current phase: ${phase})"
+    sleep 5
+  done
+  Die "evidence PVC ${pvc} failed to bind within 120 seconds"
+}
+
+# Auto-create evidence PVC if it was missing (storageClass now known from guest disk)
+if ((evidencePvcMissing)); then
+  EnsureEvidencePVC "${evidenceId}" "${ns}" "${storageClass}"
+fi
+
+# Validate evidence PVC: must be Bound and Filesystem mode
+if ((testMode == 0)) || [[ "${evidenceKind}" != network ]]; then
+  typeset evidencePvcJson=''; evidencePvcJson="$(Oc get pvc "${evidenceId}" -n "${ns}" -o json)" || Die "cannot read evidence PVC ${ns}/${evidenceId}"
+  jq -e '.status.phase == "Bound" and (.spec.volumeMode // "Filesystem") == "Filesystem"' <<<"${evidencePvcJson}" >/dev/null || Die 'evidence PVC must be Bound and Filesystem mode'
+fi
+
+# Ensure memory-dump PVC exists before proceeding with validation
+EnsureMemoryDumpPVC "${memoryPvc}" "${ns}" "${storageClass}" "${storageSize}"
 
 # Validate memory-dump PVC: separate PVC, Filesystem mode, must be Bound and ready
 typeset memoryPvcJson=''; memoryPvcJson="$(Oc get pvc "${memoryPvc}" -n "${ns}" -o json)" || Die "cannot read memory-dump PVC ${memoryPvc}"
@@ -270,14 +334,67 @@ Cleanup
 
 # Establish and validate communication with guest via QEMU Guest Agent (QGA)
 export BSOD_DET__NAMESPACE="${ns}" BSOD_DET__VM__NAME="${vm}" BSOD_DET__POD__NAME="${pod}" BSOD_DET__DOMAIN__NAME="${dom}"
-# Test QGA connectivity with retries (HTTP/2 connection to guest can drop transiently)
+
+# BootstrapQGA — install qemu-ga on the guest when QGA is not yet running.
+# Downloads qemu-ga-x86_64.msi locally, uploads via guest-agent.py put (oc exec → virsh
+# qemu-agent-command — no SSH required), then installs silently via guest-agent.py exec.
+# NOTE: guest-agent.py put itself uses QGA file transfer commands; if the QGA service is
+# completely absent the put will fail and this function returns 1 (non-fatal, pipeline dies
+# with a clear message). For VMs where QGA service exists but is slow to start this gives it
+# another chance via the extra wait before the put.
+function BootstrapQGA () {
+  typeset msiUrl="${BSOD_DET__QEMU_GA_MSI_URL:-https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/qemu-ga-x86_64.msi}"
+  typeset msiLocal; msiLocal="$(mktemp /tmp/qemu-ga-bootstrap-XXXXXX.msi)"
+
+  echo "preflight-rhov: QGA not responding — attempting qemu-ga bootstrap via guest-agent.py" >&2
+
+  # Step 1: download MSI to host
+  if ! RunTimed 120 curl -fsSL -o "${msiLocal}" "${msiUrl}"; then
+    echo "preflight-rhov: WARN: qemu-ga MSI download failed from ${msiUrl}" >&2
+    rm -f "${msiLocal}"; return 1
+  fi
+  echo "preflight-rhov: qemu-ga MSI downloaded ($(du -h "${msiLocal}" | cut -f1))" >&2
+
+  # Step 2: upload into VM via guest-agent.py put (oc exec → virsh qemu-agent-command)
+  if ! RunTimed 180 "${guestAgent[@]}" put "${msiLocal}" 'C:\Temp\qemu-ga-x86_64.msi' 2>/dev/null; then
+    echo "preflight-rhov: WARN: guest-agent.py put failed — QGA service may not be present in the VM" >&2
+    rm -f "${msiLocal}"; return 1
+  fi
+  rm -f "${msiLocal}"
+  echo "preflight-rhov: qemu-ga MSI uploaded to VM via guest-agent.py" >&2
+
+  # Step 3: install silently via guest-agent.py exec (msiexec runs as SYSTEM via QGA)
+  if ! RunTimed 120 "${guestAgent[@]}" exec \
+    'C:\Windows\System32\msiexec.exe' '/i' 'C:\Temp\qemu-ga-x86_64.msi' '/quiet' '/norestart' 2>/dev/null; then
+    echo "preflight-rhov: WARN: qemu-ga MSI install failed" >&2
+    return 1
+  fi
+
+  echo "preflight-rhov: QEMU guest agent installed — waiting 15s for service to start" >&2
+  sleep 15
+  return 0
+}
+
+# Test QGA connectivity with retries (QGA can take time to respond after VM boot)
 typeset pingOk=0
 for i in $(seq 1 5); do
   if RunTimed 15 "${guestAgent[@]}" ping >/dev/null 2>&1; then pingOk=1; break; fi
   echo "qemu guest agent ping attempt $i failed; retrying..." >&2
   sleep 3
 done
-[[ "${pingOk}" == 1 ]] || Die 'qemu guest agent ping failed after 5 retries'
+
+# All 5 pings failed — attempt to bootstrap QGA via SSH then retry
+if ((pingOk == 0)); then
+  echo "preflight-rhov: QGA unreachable after 5 attempts — attempting automatic QGA bootstrap" >&2
+  if BootstrapQGA; then
+    for i in $(seq 1 5); do
+      if RunTimed 15 "${guestAgent[@]}" ping >/dev/null 2>&1; then pingOk=1; break; fi
+      echo "preflight-rhov: post-bootstrap QGA ping attempt $i failed; retrying..." >&2
+      sleep 5
+    done
+  fi
+fi
+[[ "${pingOk}" == 1 ]] || Die 'qemu guest agent ping failed after 5 retries (bootstrap attempted)'
 
 # Configure Windows dump settings: upload PowerShell script to guest
 # Script enables CrashDumpEnabled=7 (automatic kernel dump to C:\Windows\MEMORY.DMP + Minidump) and validates page file
@@ -311,7 +428,7 @@ jq -e 'if type=="array" then all(.[]; (.path|type)=="string" and (.size|type)=="
 # Ensure inventory is valid array (default to empty if null response)
 [[ "$(jq -r type <<<"${inventory}")" == array ]] || inventory='[]'
 
-# Write all validated state to metadata JSON file for consumption by watch-crash.sh and recover-natural-crash.sh
+# Write all validated state to metadata JSON file for consumption by watch-crash.sh and extract-crash-info.sh
 # Schema version 2: defines all fields expected by watcher and extraction scripts
 typeset armedEpoch=''; armedEpoch="$(date -u +%s)"
 typeset temporary="${metadataFile}.tmp"

@@ -191,11 +191,18 @@ function CaptureMemory () {
   memoryAssociated=1
 
   # Step 2: Wait for dump phase=Completed (polling memoryDumpRequest.phase in VM status)
+  # Also check pod state every iteration — if virt-launcher is Failed/Succeeded the VM is dead
+  # and the memory dump will never complete; abort immediately rather than wait 30 minutes.
   typeset phase='' deadline=$((SECONDS + memoryTimeout))
   while ((SECONDS < deadline)); do
     phase="$(Oc get vm "${vm}" -n "${ns}" -o jsonpath='{.status.memoryDumpRequest.phase}' 2>>"${pipelineLog}" || true)"
     [[ "${phase}" == Completed ]] && break
     [[ "${phase}" == Failed ]] && { RecordError memory 'KubeVirt memory-dump API reported Failed'; return 1; }
+    typeset podPhase; podPhase="$(Oc get pod "${pod}" -n "${ns}" -o jsonpath='{.status.phase}' 2>/dev/null || echo 'Unknown')"
+    if [[ "${podPhase}" == "Failed" || "${podPhase}" == "Succeeded" ]]; then
+      Log "memory dump: virt-launcher pod is ${podPhase} (VM crash killed QEMU) — memory dump cannot complete, skipping"
+      return 1
+    fi
     sleep 3
   done
   [[ "${phase}" == Completed ]] || { RecordError memory "KubeVirt memory-dump phase timed out (last=${phase:-unset})"; return 1; }
@@ -304,8 +311,26 @@ EOF
 }
 function CaptureHostSignals () {
   typeset ok=0
-  if Oc exec -n "${ns}" "${pod}" -- virsh dumpxml "${dom}" > "${outDir}/domain.xml" 2>>"${pipelineLog}" && [[ -s "${outDir}/domain.xml" ]]; then ok=$((ok + 1)); else rm -f "${outDir}/domain.xml"; RecordError host-signals 'domain XML capture failed'; fi
-  if Oc logs -n "${ns}" "${pod}" -c compute > "${outDir}/launcher-compute.log" 2>>"${pipelineLog}" && [[ -s "${outDir}/launcher-compute.log" ]]; then ok=$((ok + 1)); else rm -f "${outDir}/launcher-compute.log"; RecordError host-signals 'launcher log capture failed'; fi
+  # Check pod state first — Failed pod means VM crash killed QEMU; oc exec will fail but that's expected
+  typeset podPhase; podPhase="$(Oc get pod "${pod}" -n "${ns}" -o jsonpath='{.status.phase}' 2>/dev/null || echo 'Unknown')"
+  typeset podDead=0; [[ "${podPhase}" == "Failed" || "${podPhase}" == "Succeeded" ]] && podDead=1
+  if [[ -s "${outDir}/domain.xml" ]]; then
+    Log "host-signals: domain.xml already pre-captured ($(wc -c < "${outDir}/domain.xml") bytes) — skipping re-capture"
+    ok=$((ok + 1))
+  elif Oc exec -n "${ns}" "${pod}" -- virsh dumpxml "${dom}" > "${outDir}/domain.xml" 2>>"${pipelineLog}" && [[ -s "${outDir}/domain.xml" ]]; then
+    ok=$((ok + 1))
+  else
+    rm -f "${outDir}/domain.xml"
+    if ((podDead)); then Log "host-signals: virt-launcher pod is ${podPhase} — domain XML not available (expected)"
+    else RecordError host-signals 'domain XML capture failed'; fi
+  fi
+  if Oc logs -n "${ns}" "${pod}" -c compute > "${outDir}/launcher-compute.log" 2>>"${pipelineLog}" && [[ -s "${outDir}/launcher-compute.log" ]]; then
+    ok=$((ok + 1))
+  else
+    rm -f "${outDir}/launcher-compute.log"
+    if ((podDead)); then Log "host-signals: virt-launcher pod is ${podPhase} — launcher log not available (expected)"
+    else RecordError host-signals 'launcher log capture failed'; fi
+  fi
   ((ok == 2)) || return 1
   typeset -a args=(--vm "${dom}" --log-file "${outDir}/launcher-compute.log" --domain-xml "${outDir}/domain.xml")
   RunTimed 60 "${hostSignalsBin}" "${args[@]}" > "${outDir}/host-signals.json" 2>>"${pipelineLog}" || { RecordError host-signals 'host-signal parser failed'; return 1; }
@@ -326,7 +351,16 @@ function MonitorDumpProgress () {
     if ((sampleStatus == 2)); then
       statFailures=$((statFailures + 1))
       if ((statFailures >= maxStatFailures)); then
-        RecordError dump-completion 'disk statistics or progress evaluation failed/timed out'; return 1
+        # Check pod state before recording as error — a Failed pod means the VM crash
+        # killed QEMU entirely (expected on some guest crash types). In that case domstats
+        # failure is expected, not a pipeline defect.
+        typeset podPhase=''; podPhase="$(Oc get pod "${pod}" -n "${ns}" -o jsonpath='{.status.phase}' 2>/dev/null || echo 'Unknown')"
+        if [[ "${podPhase}" == "Failed" || "${podPhase}" == "Succeeded" ]]; then
+          Log "dump progress: virt-launcher pod is ${podPhase} (VM crash killed QEMU) — dump monitor skipped (expected)"
+        else
+          RecordError dump-completion 'disk statistics or progress evaluation failed/timed out'
+        fi
+        return 1
       fi
       Log "dump progress: virsh domstats transient failure (${statFailures}/${maxStatFailures}), retrying..."
     else
@@ -367,13 +401,23 @@ function RestartVM () {
   if ((noRestart == 0)); then RunTimed 90 virtctl start "${vm}" -n "${ns}" >>"${pipelineLog}" 2>&1 || { RecordError restart 'virtctl start failed or timed out'; return 1; }; fi
 }
 function Recover () {
-  typeset recoveryTimeout=3600 recoveryBin="${scriptDir}/recover-natural-crash.sh"
+  typeset recoveryTimeout=3600 recoveryBin="${scriptDir}/extract-crash-info.sh"
   [[ -x "${recoveryBin}" ]] || { RecordError recovery "recovery script missing: ${recoveryBin}"; return 1; }
   RunTimed "${recoveryTimeout}" "${recoveryBin}" --metadata "${metadataFile}" --out "${outDir}" >>"${pipelineLog}" 2>&1
 }
 function CrashResponse () {
   typeset state="${1:?}"; typeset failed=0
   Log "corroborated crash/freeze detected (domstate=${state})"
+  # Capture domain.xml IMMEDIATELY at crash detection — always overwrite any pre-crash copy.
+  # The pre-crash copy (state=running) from trigger Phase 2b is a fallback only.
+  # Here we want state=crashed/paused captured at the actual crash moment.
+  Log "capturing domain.xml at crash time (state=${state})..."
+  if Oc exec -n "${ns}" "${pod}" -- virsh dumpxml "${dom}" > "${outDir}/domain.xml" 2>>"${pipelineLog}" && [[ -s "${outDir}/domain.xml" ]]; then
+    Log "domain.xml captured at crash time ($(wc -c < "${outDir}/domain.xml") bytes)"
+  else
+    rm -f "${outDir}/domain.xml"
+    Log "WARN: domain.xml crash-time capture failed — pre-crash copy (if any) will be used by CaptureHostSignals"
+  fi
   Log "waiting 60 seconds for VNC to become responsive..."
   sleep 60
   StartDumpMonitor || failed=1
