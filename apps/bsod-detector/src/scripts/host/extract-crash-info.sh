@@ -307,9 +307,10 @@ if ((${#ntfsPartitions[@]} > 0)); then
   for partition in "${ntfsPartitions[@]}"; do
     typeset partitionId="${partition##*/}"
     typeset minidumpList=''
+    # guestfish find takes only a directory — no -name filter. Filter .dmp on the host side.
     minidumpList=$(oc --request-timeout=60s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
-      bash -c "guestfish --ro -a /dev/vda run : mount-ro '${partition}' / : find /Windows/Minidump -name '*.dmp' : umount-all" \
-      2>>"${extractionLog}") || true
+      guestfish --ro -a /dev/vda run : mount-ro "${partition}" / : find /Windows/Minidump : umount-all \
+      2>>"${extractionLog}" | grep -i '\.dmp$') || true
     while IFS= read -r dmpFile; do
       [[ -z "${dmpFile}" ]] && continue
       typeset dmpName="${dmpFile##*/}"
