@@ -165,12 +165,17 @@ typeset watcherStatus=0; wait "${watcherPid}" || watcherStatus=$?; watcherPid=''
 jq -e --arg run "${runId}" '.ok == true and .runId == $run' "${outDir}/evidence-summary.json" >/dev/null || Die 'current-run evidence summary is absent or reports failure'
 echo "trigger-bsod-intentional: verified evidence package: ${outDir}"
 
-# Phase 7: Delete memory dump PVC so next run gets a fresh one via EnsureMemoryDumpPVC()
-# The evidence is already in the evidence PVC — the memory dump PVC is no longer needed.
-echo "trigger-bsod-intentional: deleting memory dump PVC ${memoryPvc} for fresh creation on next run..."
-timeout --signal=TERM --kill-after=5 60 oc --request-timeout=55s delete pvc "${memoryPvc}" -n "${ns}" \
-  --ignore-not-found=true 2>/dev/null && \
-  echo "trigger-bsod-intentional: memory dump PVC ${memoryPvc} deleted" || \
-  echo "trigger-bsod-intentional: WARN: memory dump PVC deletion failed (non-fatal)"
+# Phase 7: Delete temporary PVCs (memory-dump and evidence) so next run gets fresh ones via EnsureMemoryDumpPVC() and EnsureEvidencePVC()
+# Evidence artifacts have been exported to the evidence directory; PVCs are recreated dynamically on next run.
+echo "trigger-bsod-intentional: cleaning up dynamic PVCs for fresh creation on next run..."
+typeset pvcDeleteStatus=0
+for pvc in "${memoryPvc}" "shared-bsod-evidence"; do
+  echo "trigger-bsod-intentional: deleting PVC ${pvc}..."
+  timeout --signal=TERM --kill-after=5 60 oc --request-timeout=55s delete pvc "${pvc}" -n "${ns}" \
+    --ignore-not-found=true 2>/dev/null && \
+    echo "trigger-bsod-intentional: PVC ${pvc} deleted" || \
+    { pvcDeleteStatus=$?; echo "trigger-bsod-intentional: WARN: PVC ${pvc} deletion failed (non-fatal)"; }
+done
+((pvcDeleteStatus == 0)) || echo "trigger-bsod-intentional: WARN: some PVC deletions encountered errors (evidence still exported)"
 
 true

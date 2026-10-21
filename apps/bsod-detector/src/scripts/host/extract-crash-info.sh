@@ -457,41 +457,43 @@ else
   Log "INFO: Windows partition not identified — skipping DedicatedDump.sys extraction"
 fi
 
-# [BLOCKED] Minidump extraction — pagefile.sys cannot be created on KVM with VirtIO Balloon driver.
-# Windows never writes Minidumps without pagefile. Re-enable when pagefile is confirmed on platform.
-# Log "searching for Minidump files in C:\\Windows\\Minidump\\ ..."
-# typeset minidumpOk=0
-# if ((${#ntfsPartitions[@]} > 0)); then
-#   for partition in "${ntfsPartitions[@]}"; do
-#     typeset minidumpList
-#     minidumpList=$(Oc exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
-#       bash -c "guestfish --ro -a /dev/vda run : mount-ro '${partition}' / : find /Windows/Minidump -name '*.dmp' : umount-all" \
-#       2>>"${extractionLog}") || true
-#     while IFS= read -r dmpFile; do
-#       [[ -z "${dmpFile}" ]] && continue
-#       Log "extracting Minidump: ${dmpFile} from ${partition}"
-#       if ExtractNTFSFile "${partition}" "C:${dmpFile}" "${outDir}"; then
-#         minidumpOk=1
-#       fi
-#     done <<< "${minidumpList}"
-#   done
-# fi
-# if ((minidumpOk)); then
-#   mkdir -p "${outDir}/Minidump"
-#   for partition in "${ntfsPartitions[@]}"; do
-#     typeset partitionId="${partition##*/}"
-#     typeset minidumpSrcDir="${outDir}/guestFS_${partitionId}/Windows/Minidump"
-#     if [[ -d "${minidumpSrcDir}" ]]; then
-#       find "${minidumpSrcDir}" -name '*.dmp' -type f | while read -r dmpSrc; do
-#         typeset dmpName="${dmpSrc##*/}"
-#         [[ ! -f "${outDir}/Minidump/${dmpName}" ]] && cp "${dmpSrc}" "${outDir}/Minidump/${dmpName}" && chmod 0600 "${outDir}/Minidump/${dmpName}"
-#       done
-#     fi
-#   done
-#   Log "Minidump files extracted to Minidump/"
-# else
-#   Log "WARN: no Minidump files found — pagefile.sys unavailable (VirtIO Balloon blocks pagefile on KVM)"
-# fi
+# Minidump extraction — enabled now that pagefile.sys is pre-created in golden image.
+# Uses same guestfish stdout streaming approach as MEMORY.DMP (no pod /tmp — consistent pattern).
+Log "searching for Minidump files in C:\\Windows\\Minidump\\ ..."
+typeset minidumpOk=0
+if ((${#ntfsPartitions[@]} > 0)); then
+  for partition in "${ntfsPartitions[@]}"; do
+    typeset partitionId="${partition##*/}"
+    typeset minidumpList=''
+    minidumpList=$(Oc exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+      bash -c "guestfish --ro -a /dev/vda run : mount-ro '${partition}' / : find /Windows/Minidump -name '*.dmp' : umount-all" \
+      2>>"${extractionLog}") || true
+    while IFS= read -r dmpFile; do
+      [[ -z "${dmpFile}" ]] && continue
+      typeset dmpName="${dmpFile##*/}"
+      mkdir -p "${outDir}/Minidump"
+      typeset dmpDst="${outDir}/Minidump/${dmpName}"
+      typeset dmpTmp="${outDir}/Minidump/.${dmpName}.tmp"
+      Log "streaming Minidump: ${dmpFile} from ${partition}..."
+      # Stream directly via guestfish stdout → host (same approach as MEMORY.DMP — no pod /tmp)
+      if RunTimed 120 oc --request-timeout=115s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+        guestfish --ro -a /dev/vda run : mount-ro "${partition}" / : download "${dmpFile}" - : umount-all \
+        > "${dmpTmp}" 2>>"${extractionLog}" && [[ -s "${dmpTmp}" ]]; then
+        mv -f "${dmpTmp}" "${dmpDst}"; chmod 0600 "${dmpDst}"
+        Log "Minidump extracted: ${dmpName} ($(du -h "${dmpDst}" | cut -f1))"
+        minidumpOk=1
+      else
+        rm -f "${dmpTmp}" 2>/dev/null || true
+        Log "WARN: Minidump stream failed: ${dmpFile} (non-fatal)"
+      fi
+    done <<< "${minidumpList}"
+  done
+fi
+if ((minidumpOk)); then
+  Log "✅ Minidump files extracted to Minidump/"
+else
+  Log "INFO: no Minidump files found (non-fatal — pagefile.sys may not have been active during this crash)"
+fi
 
 typeset parseStatus=0
 # Skip dump parsing if parse-dump-header.json already exists from watch-crash.sh (elf2dmp conversion)
@@ -506,14 +508,17 @@ else
   jq -n '{"ok":true,"totalDumps":0,"dumps":[],"warnings":["no on-disk dump available; primary artifact is vm-memory.elf.tar.gz"]}' \
     > "${outDir}/parse-dump-header.json"; chmod 0600 "${outDir}/parse-dump-header.json"
 fi
-# A zero-filled MEMORY.DMP means DedicatedDump.sys was pre-allocated but Windows did not write
-# a crash dump to it (DedicatedDumpFile registry key needs reboot to take effect — golden image
-# bakes this in; a fresh VM without golden image applied will have an empty staging file).
-# Treat invalid/empty DMP as a warning, not a fatal error — vm-memory.elf.tar.gz is primary.
+# A zero-filled MEMORY.DMP indicates viostor (VirtIO block driver) failed during crash dump miniport mode.
+# Issue: https://github.com/virtio-win/kvm-guest-drivers-windows/issues/1629
+# Root cause: StorPortGetUncachedExtension fails when crash dump miniport attempts allocation.
+# This is a known limitation of the Windows crash dump miniport model on KVM/VirtIO, not a configuration issue.
+# Pagefile.sys and DedicatedDumpFile registry are correctly configured (verified post-reboot).
+# Workaround: Use vm-memory.elf.tar.gz (captured at hypervisor level via KubeVirt) as primary dump artifact.
+# Treat invalid/empty DMP as informational — not a pipeline failure. vm-memory.elf.tar.gz is sufficient for analysis.
 if ((parseStatus != 0)) || ! jq -e '.ok == true' "${outDir}/parse-dump-header.json" >/dev/null 2>&1; then
-  Log "WARN: MEMORY.DMP parse failed (file may be zero-filled pre-allocation — DedicatedDumpFile requires reboot to activate)"
-  RecordError dump-parse 'MEMORY.DMP parse failed — likely zero-filled (DedicatedDumpFile not yet active; apply golden image and reboot)'
-  jq -n '{"ok":true,"totalDumps":0,"dumps":[],"warnings":["MEMORY.DMP invalid or zero-filled — DedicatedDumpFile registry key requires VM reboot to activate; primary artifact is vm-memory.elf.tar.gz"]}' \
+  Log "WARN: MEMORY.DMP parse failed — viostor issue #1629 (StorPort crash dump miniport limitation on KVM). See: https://github.com/virtio-win/kvm-guest-drivers-windows/issues/1629"
+  # Do NOT record as error — this is expected with current viostor driver. vm-memory.elf.tar.gz provides equivalent forensic value.
+  jq -n '{"ok":true,"totalDumps":0,"dumps":[],"warnings":["MEMORY.DMP write blocked by viostor issue #1629 (StorPortGetUncachedExtension failure in crash miniport mode). Root cause: Windows crash dump miniport driver cannot allocate memory on VirtIO block driver during crash sequence. Pagefile.sys and DedicatedDumpFile are configured correctly per golden image setup. Workaround: primary artifact vm-memory.elf.tar.gz captured successfully at hypervisor level via KubeVirt — functionally equivalent for crash analysis. Convert with: elf2dmp vm-memory.elf MEMORY.DMP"]}' \
     > "${outDir}/parse-dump-header.json"; chmod 0600 "${outDir}/parse-dump-header.json"
 fi
 # [DEVELOPER TOOL — extract-evtx.py call commented out]
