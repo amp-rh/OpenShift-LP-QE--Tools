@@ -334,13 +334,13 @@ function CaptureHostSignals () {
   # Check pod state first — Failed pod means VM crash killed QEMU; oc exec will fail but that's expected
   typeset podPhase; podPhase="$(Oc get pod "${pod}" -n "${ns}" -o jsonpath='{.status.phase}' 2>/dev/null || echo 'Unknown')"
   typeset podDead=0; [[ "${podPhase}" == "Failed" || "${podPhase}" == "Succeeded" ]] && podDead=1
-  if [[ -s "${outDir}/domain.xml" ]]; then
-    Log "host-signals: domain.xml already pre-captured ($(wc -c < "${outDir}/domain.xml") bytes) — skipping re-capture"
+  if [[ -s "${outDir}/domain-bsod.xml" ]]; then
+    Log "host-signals: domain-bsod.xml already pre-captured ($(wc -c < "${outDir}/domain-bsod.xml") bytes) — skipping re-capture"
     ok=$((ok + 1))
-  elif Oc exec -n "${ns}" "${pod}" -- virsh dumpxml "${dom}" > "${outDir}/domain.xml" 2>>"${pipelineLog}" && [[ -s "${outDir}/domain.xml" ]]; then
+  elif Oc exec -n "${ns}" "${pod}" -- virsh dumpxml "${dom}" > "${outDir}/domain-bsod.xml" 2>>"${pipelineLog}" && [[ -s "${outDir}/domain-bsod.xml" ]]; then
     ok=$((ok + 1))
   else
-    rm -f "${outDir}/domain.xml"
+    rm -f "${outDir}/domain-bsod.xml"
     if ((podDead)); then Log "host-signals: virt-launcher pod is ${podPhase} — domain XML not available (expected)"
     else RecordError host-signals 'domain XML capture failed'; fi
   fi
@@ -352,7 +352,7 @@ function CaptureHostSignals () {
     else RecordError host-signals 'launcher log capture failed'; fi
   fi
   ((ok == 2)) || return 1
-  typeset -a args=(--vm "${dom}" --log-file "${outDir}/launcher-compute.log" --domain-xml "${outDir}/domain.xml")
+  typeset -a args=(--vm "${dom}" --log-file "${outDir}/launcher-compute.log" --domain-xml "${outDir}/domain-bsod.xml")
   RunTimed 60 "${hostSignalsBin}" "${args[@]}" > "${outDir}/host-signals.json" 2>>"${pipelineLog}" || { RecordError host-signals 'host-signal parser failed'; return 1; }
   Log "captured launcher/domain diagnostics for node ${node:-unknown}"
 }
@@ -428,15 +428,15 @@ function Recover () {
 function CrashResponse () {
   typeset state="${1:?}"; typeset failed=0
   Log "corroborated crash/freeze detected (domstate=${state})"
-  # Capture domain.xml IMMEDIATELY at crash detection — always overwrite any pre-crash copy.
+  # Capture domain-bsod.xml IMMEDIATELY at crash detection — always overwrite any pre-crash copy.
   # The pre-crash copy (state=running) from trigger Phase 2b is a fallback only.
   # Here we want state=crashed/paused captured at the actual crash moment.
-  Log "capturing domain.xml at crash time (state=${state})..."
-  if Oc exec -n "${ns}" "${pod}" -- virsh dumpxml "${dom}" > "${outDir}/domain.xml" 2>>"${pipelineLog}" && [[ -s "${outDir}/domain.xml" ]]; then
-    Log "domain.xml captured at crash time ($(wc -c < "${outDir}/domain.xml") bytes)"
+  Log "capturing domain-bsod.xml at crash time (state=${state})..."
+  if Oc exec -n "${ns}" "${pod}" -- virsh dumpxml "${dom}" > "${outDir}/domain-bsod.xml" 2>>"${pipelineLog}" && [[ -s "${outDir}/domain-bsod.xml" ]]; then
+    Log "domain-bsod.xml captured at crash time ($(wc -c < "${outDir}/domain-bsod.xml") bytes)"
   else
-    rm -f "${outDir}/domain.xml"
-    Log "WARN: domain.xml crash-time capture failed — pre-crash copy (if any) will be used by CaptureHostSignals"
+    rm -f "${outDir}/domain-bsod.xml"
+    Log "WARN: domain-bsod.xml crash-time capture failed — pre-crash copy (if any) will be used by CaptureHostSignals"
   fi
   Log "waiting 60 seconds for VNC to become responsive..."
   sleep 60

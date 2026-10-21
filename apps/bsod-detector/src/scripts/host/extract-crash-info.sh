@@ -420,6 +420,18 @@ else
   Log "WARN: no EventLog files could be extracted from any partition"
 fi
 
+# Copy domain-bsod.xml into guestfs extraction directory alongside event logs — enables forensic comparison.
+# domain-bsod.xml was captured at crash detection time; copy as domain-guestfs.xml after extraction
+# so analysts can compare: domain-bsod.xml (at crash) vs domain-guestfs.xml (after VM stopped/extracted).
+if [[ -f "${outDir}/domain-bsod.xml" && -n "${windowsPartition}" ]]; then
+  typeset partitionId="${windowsPartition##*/}"
+  typeset guestfsDomainDir="${outDir}/guestFS_${partitionId}"
+  mkdir -p "${guestfsDomainDir}"
+  cp -f "${outDir}/domain-bsod.xml" "${guestfsDomainDir}/domain-guestfs.xml" && \
+    Log "✅ domain config grouped with extracted files: guestFS_${partitionId}/domain-guestfs.xml (compare with domain-bsod.xml at root)" || \
+    Log "WARN: failed to copy domain-bsod.xml to guestfs directory (non-fatal)"
+fi
+
 # DedicatedDump.sys → MEMORY.DMP offline extraction (AutoReboot=0 workaround)
 # With AutoReboot=0 the VM freezes at BSOD — Windows writes crash data to DedicatedDump.sys
 # but never copies it to MEMORY.DMP (that copy happens during post-crash reboot).
