@@ -300,61 +300,68 @@ else
   Log "INFO: Windows partition not identified — skipping DedicatedDump.sys extraction"
 fi
 
-# Minidump extraction — same streaming approach as MEMORY.DMP (no pod /tmp dependency).
-Log "searching for Minidump files in C:\\Windows\\Minidump\\ ..."
+# Minidump extraction — all files in C:\Windows\Minidump\ regardless of extension.
+# guestfish find lists all files recursively; preserves directory structure under Minidump/.
+Log "searching for all files in C:\\Windows\\Minidump\\ ..."
 typeset minidumpOk=0
+mkdir -p "${outDir}/Minidump"
 if ((${#ntfsPartitions[@]} > 0)); then
   for partition in "${ntfsPartitions[@]}"; do
-    typeset partitionId="${partition##*/}"
     typeset minidumpList=''
-    # guestfish find takes only a directory — no -name filter. Filter .dmp on the host side.
+    # guestfish find lists all entries (files and dirs) — dirs fail silently on download.
     minidumpList=$(oc --request-timeout=60s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
       guestfish --ro -a /dev/vda run : mount-ro "${partition}" / : find /Windows/Minidump : umount-all \
-      2>>"${extractionLog}" | grep -i '\.dmp$') || true
-    while IFS= read -r dmpFile; do
-      [[ -z "${dmpFile}" ]] && continue
-      typeset dmpName="${dmpFile##*/}"
-      mkdir -p "${outDir}/Minidump"
-      typeset dmpDst="${outDir}/Minidump/${dmpName}"
-      typeset dmpTmp="${outDir}/Minidump/.${dmpName}.tmp"
-      Log "streaming Minidump: ${dmpFile} from ${partition}..."
+      2>>"${extractionLog}") || true
+    while IFS= read -r minFile; do
+      [[ -z "${minFile}" ]] && continue
+      # Skip the root Minidump directory entry itself
+      [[ "${minFile}" == "/Windows/Minidump" ]] && continue
+      typeset minName="${minFile##*/}"
+      # Preserve subdirectory structure under outDir/Minidump/
+      typeset minRelDir="${minFile%/*}"; minRelDir="${minRelDir#/Windows/Minidump}"
+      typeset minDstDir="${outDir}/Minidump${minRelDir}"
+      mkdir -p "${minDstDir}"
+      typeset minDst="${minDstDir}/${minName}"
+      typeset minTmp="${minDstDir}/.${minName}.tmp"
+      Log "streaming Minidump file: ${minFile} from ${partition}..."
       # Stall detection: terminate if no bytes written for 5 minutes.
       oc --request-timeout=0s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
-        guestfish --ro -a /dev/vda run : mount-ro "${partition}" / : download "${dmpFile}" - : umount-all \
-        > "${dmpTmp}" 2>>"${extractionLog}" &
+        guestfish --ro -a /dev/vda run : mount-ro "${partition}" / : download "${minFile}" - : umount-all \
+        > "${minTmp}" 2>>"${extractionLog}" &
       typeset minidumpPid=$!
-      typeset lastMinidumpSize=0 minidumpStallCount=0 minidumpStallThreshold=10  # 10 * 30s = 5 min stall limit
+      typeset lastMinSize=0 minStallCount=0 minStallThreshold=10  # 10 * 30s = 5 min stall limit
       while kill -0 "${minidumpPid}" 2>/dev/null; do
         sleep 30
-        typeset minidumpCurrentSize=0
-        [[ -f "${dmpTmp}" ]] && minidumpCurrentSize=$(stat -c%s "${dmpTmp}" 2>/dev/null || echo 0)
-        if ((minidumpCurrentSize > lastMinidumpSize)); then
-          Log "Minidump ${dmpName} stream progress: $(numfmt --to=iec-i --suffix=B "${minidumpCurrentSize}" 2>/dev/null || echo "${minidumpCurrentSize} bytes")"
-          lastMinidumpSize=${minidumpCurrentSize}; minidumpStallCount=0
+        typeset minCurrentSize=0
+        [[ -f "${minTmp}" ]] && minCurrentSize=$(stat -c%s "${minTmp}" 2>/dev/null || echo 0)
+        if ((minCurrentSize > lastMinSize)); then
+          Log "Minidump ${minName} stream progress: $(numfmt --to=iec-i --suffix=B "${minCurrentSize}" 2>/dev/null || echo "${minCurrentSize} bytes")"
+          lastMinSize=${minCurrentSize}; minStallCount=0
         else
-          ((minidumpStallCount++))
-          ((minidumpStallCount > minidumpStallThreshold)) && {
-            Log "WARN: Minidump ${dmpName} stream stalled — terminating"
+          ((minStallCount++))
+          ((minStallCount > minStallThreshold)) && {
+            Log "WARN: Minidump ${minName} stream stalled — terminating"
             kill -TERM "${minidumpPid}" 2>/dev/null || true; break
           }
         fi
       done
       wait "${minidumpPid}" 2>/dev/null
-      if [[ -s "${dmpTmp}" ]]; then
-        mv -f "${dmpTmp}" "${dmpDst}"; chmod 0600 "${dmpDst}"
-        Log "Minidump extracted: ${dmpName} ($(du -h "${dmpDst}" | cut -f1))"
+      if [[ -s "${minTmp}" ]]; then
+        mv -f "${minTmp}" "${minDst}"; chmod 0600 "${minDst}"
+        Log "Minidump file extracted: ${minName} ($(du -h "${minDst}" | cut -f1))"
         minidumpOk=1
       else
-        rm -f "${dmpTmp}" 2>/dev/null || true
-        Log "WARN: Minidump stream failed: ${dmpFile} (non-fatal)"
+        rm -f "${minTmp}" 2>/dev/null || true
+        Log "WARN: Minidump stream failed: ${minFile} (non-fatal)"
       fi
     done <<< "${minidumpList}"
+    ((minidumpOk)) && break  # Found files — stop checking other partitions
   done
 fi
 if ((minidumpOk)); then
   Log "✅ Minidump files extracted to Minidump/"
 else
-  Log "INFO: no Minidump files found (non-fatal — pagefile.sys may not have been active during this crash)"
+  Log "INFO: no files found in C:\\Windows\\Minidump\\ (non-fatal — pagefile.sys may not have been active during this crash)"
 fi
 
 typeset parseStatus=0
