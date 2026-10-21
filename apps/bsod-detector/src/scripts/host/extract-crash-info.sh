@@ -316,7 +316,13 @@ typeset guestfsImage="${BSOD_DET__GUESTFS__NTFS_IMAGE:-quay.io/konveyor/oadp-vmf
 #   - Memory request: 512Mi (typical usage), limit: 2Gi (headroom for spikes)
 #   - CPU request: 500m (conservative), limit: 2000m (allows burst for large extractions)
 jq -n --arg name "${guestfsPod}" --arg ns "${ns}" --arg image "${guestfsImage}" --arg pvc "${guestPvc}" \
-  '{apiVersion:"v1",kind:"Pod",metadata:{name:$name,namespace:$ns,labels:{app:"bsod-guestfs-extraction"}},spec:{restartPolicy:"Never",automountServiceAccountToken:false,securityContext:{runAsNonRoot:true,fsGroup:1000800000,seccompProfile:{type:"RuntimeDefault"}},nodeSelector:{"kubernetes.io/arch":"amd64"},containers:[{name:"libguestfs",image:$image,imagePullPolicy:"Always",command:["/bin/bash","-c","exec tail -f /dev/null"],env:[{name:"LIBGUESTFS_BACKEND",value:"direct"},{name:"LIBGUESTFS_BACKEND_SETTINGS",value:"force_tcg"},{name:"LIBGUESTFS_TMPDIR",value:"/tmp/guestfs"},{name:"LIBGUESTFS_CACHEDIR",value:"/tmp/guestfs"},{name:"HOME",value:"/home/guestfs"}],securityContext:{allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]}},resources:{requests:{memory:"512Mi",cpu:"500m"},limits:{memory:"2Gi",cpu:"2000m"}},volumeDevices:[{name:"guest-disk",devicePath:"/dev/vda"}],volumeMounts:[{name:"guestfs-tmp",mountPath:"/tmp/guestfs"},{name:"guestfs-home",mountPath:"/home/guestfs"}],workingDir:"/tmp/guestfs"}],volumes:[{name:"guest-disk",persistentVolumeClaim:{claimName:$pvc,readOnly:true}},{name:"guestfs-tmp",emptyDir:{}},{name:"guestfs-home",emptyDir:{}}]}}' | Oc apply -f - 2>/dev/null >>"${extractionLog}"
+  '{apiVersion:"v1",kind:"Pod",metadata:{name:$name,namespace:$ns,labels:{app:"bsod-guestfs-extraction"}}
+  ,spec:{restartPolicy:"Never",automountServiceAccountToken:false,securityContext:{runAsNonRoot:true,fsGroup:1000800000,seccompProfile:{type:"RuntimeDefault"}}
+  ,nodeSelector:{"kubernetes.io/arch":"amd64"},containers:[{name:"libguestfs",image:$image,imagePullPolicy:"Always",command:["/bin/bash","-c","exec tail -f /dev/null"]
+  ,env:[{name:"LIBGUESTFS_BACKEND",value:"direct"},{name:"LIBGUESTFS_BACKEND_SETTINGS",value:"force_tcg"},{name:"LIBGUESTFS_TMPDIR",value:"/tmp/guestfs"},{name:"LIBGUESTFS_CACHEDIR",value:"/tmp/guestfs"}
+  ,{name:"HOME",value:"/home/guestfs"}],securityContext:{allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]}},resources:{requests:{memory:"512Mi",cpu:"500m"},limits:{memory:"2Gi",cpu:"2000m"}}
+  ,volumeDevices:[{name:"guest-disk",devicePath:"/dev/vda"}],volumeMounts:[{name:"guestfs-tmp",mountPath:"/tmp/guestfs"},{name:"guestfs-home",mountPath:"/home/guestfs"}],workingDir:"/tmp/guestfs"}]
+  ,volumes:[{name:"guest-disk",persistentVolumeClaim:{claimName:$pvc,readOnly:true}},{name:"guestfs-tmp",emptyDir:{}},{name:"guestfs-home",emptyDir:{}}]}}' | Oc apply -f - 2>/dev/null >>"${extractionLog}"
 
 podCreated=1; WaitJsonPath pod "${guestfsPod}" '{.status.phase}' Running 180 || { RecordError extraction-pod "guestfs-ntfs pod '${guestfsPod}' startup timed out"; exit 1; }
 
@@ -438,8 +444,9 @@ if [[ -n "${windowsPartition}" ]]; then
     # Stream DedicatedDump.sys directly from guestfish stdout → host file via oc exec.
     # Avoids pod /tmp entirely — critical for large dumps (7-16GB) where emptyDir runs out.
     # guestfish 'download /file -' writes binary to stdout; oc exec captures it.
+    # No timeout: streaming continues until completion, accounting for any dump size or network conditions.
     typeset memDmpTmp="${outDir}/.MEMORY.DMP.tmp"
-    if RunTimed 7200 oc --request-timeout=7195s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+    if oc --request-timeout=0s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
       guestfish --ro -a /dev/vda run : mount-ro "${windowsPartition}" / \
         : download /DedicatedDump.sys - : umount-all \
       > "${memDmpTmp}" 2>>"${extractionLog}" && [[ -s "${memDmpTmp}" ]]; then
@@ -476,7 +483,8 @@ if ((${#ntfsPartitions[@]} > 0)); then
       typeset dmpTmp="${outDir}/Minidump/.${dmpName}.tmp"
       Log "streaming Minidump: ${dmpFile} from ${partition}..."
       # Stream directly via guestfish stdout → host (same approach as MEMORY.DMP — no pod /tmp)
-      if RunTimed 120 oc --request-timeout=115s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+      # No timeout: streaming continues until completion, accounting for any dump size or network conditions.
+      if oc --request-timeout=0s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
         guestfish --ro -a /dev/vda run : mount-ro "${partition}" / : download "${dmpFile}" - : umount-all \
         > "${dmpTmp}" 2>>"${extractionLog}" && [[ -s "${dmpTmp}" ]]; then
         mv -f "${dmpTmp}" "${dmpDst}"; chmod 0600 "${dmpDst}"
