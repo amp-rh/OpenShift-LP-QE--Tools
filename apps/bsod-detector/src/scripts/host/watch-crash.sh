@@ -252,8 +252,9 @@ EOF
   # --port-forward: virtctl manages its own port-forward internally (no manual pfPid)
   # --insecure    : export service uses self-signed certificate
   # --keep-vme    : we delete the export ourselves after download
-  Log "downloading memory dump via virtctl vmexport download (gzip/tar.gz format)..."
-  if ! RunTimed 3600 virtctl vmexport download "${exportName}" \
+  # No timeout: download continues until completion, accounting for any VM memory size or network conditions.
+  Log "downloading memory dump via virtctl vmexport download (gzip/tar.gz format, no timeout)..."
+  if ! virtctl vmexport download "${exportName}" \
       -n "${ns}" \
       --output "${temporary}" \
       --format gzip \
