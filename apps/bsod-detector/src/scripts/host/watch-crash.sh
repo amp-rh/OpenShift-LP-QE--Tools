@@ -252,15 +252,34 @@ EOF
   # --port-forward: virtctl manages its own port-forward internally (no manual pfPid)
   # --insecure    : export service uses self-signed certificate
   # --keep-vme    : we delete the export ourselves after download
-  # No timeout: download continues until completion, accounting for any VM memory size or network conditions.
-  Log "downloading memory dump via virtctl vmexport download (gzip/tar.gz format, no timeout)..."
-  if ! virtctl vmexport download "${exportName}" \
+  # Progress monitoring: detect stalls (no writes for 5 min), but allow active downloads to complete indefinitely.
+  # Start download in background, monitor file size every 30s, fail only if stalled for 5+ minutes.
+  Log "downloading memory dump via virtctl vmexport download (gzip/tar.gz format, progress-monitored)..."
+  virtctl vmexport download "${exportName}" \
       -n "${ns}" \
       --output "${temporary}" \
       --format gzip \
       --port-forward \
       --insecure \
-      --keep-vme >>"${pipelineLog}" 2>&1; then
+      --keep-vme >>"${pipelineLog}" 2>&1 &
+  typeset downloadPid=$!
+  typeset lastSize=0 stallCount=0 stallThreshold=10  # 10 checks * 30s = 5 minutes of no progress
+  while kill -0 "${downloadPid}" 2>/dev/null; do
+    sleep 30
+    typeset currentSize=0
+    [[ -f "${temporary}" ]] && currentSize=$(stat -c%s "${temporary}" 2>/dev/null || echo 0)
+    if ((currentSize > lastSize)); then
+      Log "download progress: $(numfmt --to=iec-i --suffix=B ${currentSize} 2>/dev/null || echo ${currentSize} bytes)"
+      lastSize=${currentSize}
+      stallCount=0
+    else
+      ((stallCount++))
+      ((stallCount > stallThreshold)) && { Log "WARN: download stalled (no writes for 5 min) — terminating"; kill -TERM "${downloadPid}" 2>/dev/null || true; break; }
+    fi
+  done
+  wait "${downloadPid}" 2>/dev/null
+  typeset downloadStatus=$?
+  if ((downloadStatus != 0)); then
     Oc delete virtualmachineexport "${exportName}" -n "${ns}" --ignore-not-found >>"${pipelineLog}" 2>&1 || true
     RecordError memory "virtctl vmexport download failed"; return 1
   fi

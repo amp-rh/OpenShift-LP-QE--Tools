@@ -444,12 +444,29 @@ if [[ -n "${windowsPartition}" ]]; then
     # Stream DedicatedDump.sys directly from guestfish stdout → host file via oc exec.
     # Avoids pod /tmp entirely — critical for large dumps (7-16GB) where emptyDir runs out.
     # guestfish 'download /file -' writes binary to stdout; oc exec captures it.
-    # No timeout: streaming continues until completion, accounting for any dump size or network conditions.
+    # Progress monitoring: detect stalls (no writes for 5 min), but allow active downloads to complete indefinitely.
     typeset memDmpTmp="${outDir}/.MEMORY.DMP.tmp"
-    if oc --request-timeout=0s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+    oc --request-timeout=0s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
       guestfish --ro -a /dev/vda run : mount-ro "${windowsPartition}" / \
         : download /DedicatedDump.sys - : umount-all \
-      > "${memDmpTmp}" 2>>"${extractionLog}" && [[ -s "${memDmpTmp}" ]]; then
+      > "${memDmpTmp}" 2>>"${extractionLog}" &
+    typeset dmpPid=$!
+    typeset lastSize=0 stallCount=0 stallThreshold=10  # 10 checks * 30s = 5 minutes of no progress
+    while kill -0 "${dmpPid}" 2>/dev/null; do
+      sleep 30
+      typeset currentSize=0
+      [[ -f "${memDmpTmp}" ]] && currentSize=$(stat -c%s "${memDmpTmp}" 2>/dev/null || echo 0)
+      if ((currentSize > lastSize)); then
+        Log "MEMORY.DMP stream progress: $(numfmt --to=iec-i --suffix=B ${currentSize} 2>/dev/null || echo ${currentSize} bytes)"
+        lastSize=${currentSize}
+        stallCount=0
+      else
+        ((stallCount++))
+        ((stallCount > stallThreshold)) && { Log "WARN: MEMORY.DMP stream stalled (no writes for 5 min) — terminating"; kill -TERM "${dmpPid}" 2>/dev/null || true; break; }
+      fi
+    done
+    wait "${dmpPid}" 2>/dev/null
+    if [[ -s "${memDmpTmp}" ]]; then
       mv -f "${memDmpTmp}" "${outDir}/MEMORY.DMP"
       chmod 0600 "${outDir}/MEMORY.DMP"
       Log "MEMORY.DMP extracted from DedicatedDump.sys ($(du -h "${outDir}/MEMORY.DMP" | cut -f1))"
@@ -483,10 +500,27 @@ if ((${#ntfsPartitions[@]} > 0)); then
       typeset dmpTmp="${outDir}/Minidump/.${dmpName}.tmp"
       Log "streaming Minidump: ${dmpFile} from ${partition}..."
       # Stream directly via guestfish stdout → host (same approach as MEMORY.DMP — no pod /tmp)
-      # No timeout: streaming continues until completion, accounting for any dump size or network conditions.
-      if oc --request-timeout=0s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
+      # Progress monitoring: detect stalls (no writes for 5 min), but allow active downloads to complete indefinitely.
+      oc --request-timeout=0s exec -n "${ns}" "${guestfsPod}" -c "${guestfsContainer}" -- \
         guestfish --ro -a /dev/vda run : mount-ro "${partition}" / : download "${dmpFile}" - : umount-all \
-        > "${dmpTmp}" 2>>"${extractionLog}" && [[ -s "${dmpTmp}" ]]; then
+        > "${dmpTmp}" 2>>"${extractionLog}" &
+      typeset minidumpPid=$!
+      typeset lastMinidumpSize=0 minidumpStallCount=0 minidumpStallThreshold=10  # 10 checks * 30s = 5 minutes
+      while kill -0 "${minidumpPid}" 2>/dev/null; do
+        sleep 30
+        typeset minidumpCurrentSize=0
+        [[ -f "${dmpTmp}" ]] && minidumpCurrentSize=$(stat -c%s "${dmpTmp}" 2>/dev/null || echo 0)
+        if ((minidumpCurrentSize > lastMinidumpSize)); then
+          Log "Minidump ${dmpName} stream progress: $(numfmt --to=iec-i --suffix=B ${minidumpCurrentSize} 2>/dev/null || echo ${minidumpCurrentSize} bytes)"
+          lastMinidumpSize=${minidumpCurrentSize}
+          minidumpStallCount=0
+        else
+          ((minidumpStallCount++))
+          ((minidumpStallCount > minidumpStallThreshold)) && { Log "WARN: Minidump ${dmpName} stream stalled (no writes for 5 min) — terminating"; kill -TERM "${minidumpPid}" 2>/dev/null || true; break; }
+        fi
+      done
+      wait "${minidumpPid}" 2>/dev/null
+      if [[ -s "${dmpTmp}" ]]; then
         mv -f "${dmpTmp}" "${dmpDst}"; chmod 0600 "${dmpDst}"
         Log "Minidump extracted: ${dmpName} ($(du -h "${dmpDst}" | cut -f1))"
         minidumpOk=1
