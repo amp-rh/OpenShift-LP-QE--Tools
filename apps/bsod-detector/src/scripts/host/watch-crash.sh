@@ -7,7 +7,7 @@ umask 077
 typeset scriptDir=''; scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 typeset ns=''; typeset vm=''; typeset outArg=''; typeset outDir=''; typeset metadataFile=''; typeset runId=''
 typeset interval=5; typeset miss=2; typeset quiesceWait=900; typeset idleSamples=3
-typeset snapClass="${BSOD_DET__SNAPSHOT__CLASS:-}"; typeset recoveryImage="${BSOD_RECOVERY_IMAGE:-}"
+typeset snapClass="${BSOD_DET__SNAPSHOT__CLASS:-}"; typeset recoveryImage="${BSOD_DET__RECOVERY__IMAGE:-}"
 typeset memoryPvc="${BSOD_DET__MEMORY__DUMP_PVC:-}"; typeset diskTarget=''; typeset noRestart=0
 typeset evidenceRoot="${BSOD_DET__EVIDENCE__MOUNT:-}"; typeset evidenceKind="${BSOD_EVIDENCE_VOLUME_KIND:-}"
 typeset evidenceId="${BSOD_DET__EVIDENCE__STORAGE_ID:-}"; typeset readyFile=''

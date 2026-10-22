@@ -10,7 +10,7 @@ typeset appDir=''; appDir="$(cd "${scriptDir}/../../.." && pwd)"
 typeset configureScript="${BSOD_DET__CONFIGURE__DUMPS:-${appDir}/src/scripts/guest/configure-dumps.ps1}"
 typeset crashControlFile="${BSOD_DET__CRASH_CONTROL__FILE:-${appDir}/src/data/crash-control.json}"
 typeset ns=''; typeset vm=''; typeset outDir=''; typeset metadataFile=''; typeset runId=''
-typeset snapClass="${BSOD_DET__SNAPSHOT__CLASS:-}"; typeset recoveryImage="${BSOD_RECOVERY_IMAGE:-}"
+typeset snapClass="${BSOD_DET__SNAPSHOT__CLASS:-}"; typeset recoveryImage="${BSOD_DET__RECOVERY__IMAGE:-}"
 typeset diskTarget=''; typeset memoryPvc="${BSOD_DET__MEMORY__DUMP_PVC:-}"; typeset requireTrigger=0
 typeset evidenceRoot="${BSOD_DET__EVIDENCE__MOUNT:-}"; typeset evidenceKind="${BSOD_EVIDENCE_VOLUME_KIND:-}"
 typeset evidenceId="${BSOD_DET__EVIDENCE__STORAGE_ID:-}"

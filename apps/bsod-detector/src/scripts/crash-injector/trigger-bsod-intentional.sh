@@ -10,7 +10,7 @@ typeset crashType="${1:-}"; typeset vm="${BSOD_DET__VM__NAME:-}"; typeset ns="${
 typeset evidenceRoot="${BSOD_DET__EVIDENCE__DIR:-/mnt/persistent-bsod-evidence}"; typeset evidenceKind="${BSOD_EVIDENCE_VOLUME_KIND:-pvc}"
 typeset evidenceId="${BSOD_DET__EVIDENCE__STORAGE_ID:-shared-bsod-evidence}"; typeset memoryPvc="${BSOD_DET__MEMORY__DUMP_PVC:-${BSOD_DET__VM__NAME}-memdump}"
 # Kubernetes storage classes and container image for extraction pod
-typeset snapClass="${BSOD_DET__SNAPSHOT__CLASS:-ocs-storagecluster-rbdplugin-snapclass}"; typeset recoveryImage="${BSOD_RECOVERY_IMAGE:-quay.io/konveyor/oadp-vmfr-access:latest@sha256:e26c74ce8957768bd0bca7fdec01e28874c834cfdbea6fb9e8a5136ec7548cf0}"
+typeset snapClass="${BSOD_DET__SNAPSHOT__CLASS:-ocs-storagecluster-rbdplugin-snapclass}"; typeset recoveryImage="${BSOD_DET__RECOVERY__IMAGE:-quay.io/konveyor/oadp-vmfr-access:latest@sha256:e26c74ce8957768bd0bca7fdec01e28874c834cfdbea6fb9e8a5136ec7548cf0}"
 # Timeouts: how long to wait for watcher readiness and preflight validation
 typeset readyTimeout="${BSOD_DET__READY__TIMEOUT:-300}"
 typeset preflightTimeout="${BSOD_DET__PREFLIGHT__TIMEOUT:-300}"
