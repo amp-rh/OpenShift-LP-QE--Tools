@@ -716,9 +716,10 @@ capabilities:
 
 ```bash
 # 1. Set targets explicitly (no defaults — prevents wrong-VM targeting)
-export BSOD_DET__VM__NAME=win2022-vm-hjoshi1
-export BSOD_DET__NAMESPACE=windows-bsod
-
+export BSOD_DET__VM__NAME=<vm-name>
+export BSOD_DET__NAMESPACE=<namespace>
+export export BSOD_DET__CONFIRM_TARGET=<vm-name>
+export BSOD_RECOVERY_IMAGE="quay.io/konveyor/oadp-vmfr-access:latest@sha256:41bca5351c221fb78976a491156529d5087d13e710f9eb37bd7075c24ec77ea4"
 # 2. Run pipeline
 ./src/scripts/crash-injector/trigger-bsod-intentional.sh 0x01
 
