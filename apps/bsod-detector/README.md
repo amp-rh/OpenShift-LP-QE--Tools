@@ -26,8 +26,8 @@ running under KubeVirt / OpenShift Virtualization (RHOV).
 └────────┬───────────────────────────────────────────────────┘
          │
    ┌─────▼──────┐     ┌─────────────────┐     ┌────────────────────┐
-   │ preflight  │     │  watch-crash.sh │     │recover-natural-    │
-   │ -rhov.sh   │──►  │  (background)   │──►  │crash.sh            │
+   │ preflight  │     │  watch-crash.sh │     │extract-crash-      │
+   │ -rhov.sh   │──►  │  (background)   │──►  │info.sh             │
    └─────┬──────┘     └────────┬────────┘     └──────────┬─────────┘
          │                     │                          │
    QGA ping             virtctl memory-dump          guestfs-ntfs pod
@@ -521,18 +521,18 @@ jq '.invalidArtifacts' ...               # [] = all files structurally valid
 
 ---
 
-## Platform Limitations (KVM + VirtIO Balloon)
+## Platform Limitations (KVM + VirtIO)
 
 | Artifact | Status | Reason |
 |---|---|---|
 | `vm-memory.elf.tar.gz` | ✅ Always captured | KubeVirt virtctl — independent of Windows disk state |
 | `System.evtx` / `Application.evtx` | ✅ Always captured | Offline guestfish NTFS read after VM stopped |
-| `MEMORY.DMP` (on-disk) | ❌ Not captured | `AutoReboot=0` prevents boot that copies DedicatedDump.sys → MEMORY.DMP |
-| `Minidump/*.dmp` | ❌ Not captured | Requires `pagefile.sys`. Windows Server 2022 on KVM defers pagefile creation until memory pressure (never triggered on ≥16GB VMs) |
+| `MEMORY.DMP` | ⚠️ Zero-filled on VirtIO | viostor (virtio-blk) and vioscsi (virtio-scsi) fail in crash dump miniport mode — `StorPortGetUncachedExtension` failure. Expected to work with SATA (storahci.sys). Invalid MEMORY.DMP does **not** flip `ok=false` |
+| `Minidump/` | ⚠️ Empty on VirtIO | Same StorPort miniport failure. pagefile.sys IS pre-created (4GB) in golden image; blocked only by VirtIO driver issue |
 | `vm-memory-windows.dmp` | ❌ Not in pipeline | elf2dmp disabled (17GB, run offline) |
 | Volatility outputs | ❌ Not in pipeline | Developer tool, run offline against vm-memory.elf.tar.gz |
 
-### Why MINIDUMP and MEMORY.DMP Are Permanently Blocked
+### Why MEMORY.DMP and Minidump Are Zero-filled/Empty on VirtIO
 
 **Root cause**: Windows Server 2022 on KVM with VirtIO Balloon cannot create `pagefile.sys` on demand. The pipeline must use `AutoReboot=0` to freeze the VM at BSOD, which prevents the post-crash reboot that would copy crash dumps to disk.
 
@@ -584,13 +584,14 @@ jq '.invalidArtifacts' ...               # [] = all files structurally valid
 
 #### Conclusion
 
-**MEMORY.DMP and Minidump are permanently unavailable on this infrastructure** due to:
-1. Windows Server 2022 lazy pagefile allocation on KVM
-2. Pipeline requirement for `AutoReboot=0` to freeze VM and capture evidence (prevents post-crash reboot that would copy DedicatedDump.sys → MEMORY.DMP to disk)
-3. No hypervisor-level mechanism to force pagefile creation — this is a guest OS decision
-4. Even with extreme memory stress (5.5GB consumed, free RAM 10.4GB; or 1.4GB free with balloon), pagefile allocation was not triggered
+**MEMORY.DMP and Minidump are zero-filled/empty on VirtIO (viostor/vioscsi)** due to:
+1. `StorPortGetUncachedExtension` failure in Windows crash dump miniport mode — affects all VirtIO storage drivers (viostor issue [#1629](https://github.com/virtio-win/kvm-guest-drivers-windows/issues/1629), closed as StorPort architecture limitation)
+2. Both viostor (virtio-blk) and vioscsi (virtio-scsi) tested — both produce zero-filled MEMORY.DMP
+3. SATA (storahci.sys — inbox Windows driver) testing in progress — expected to work since storahci.sys has native crash dump miniport support
 
-The pipeline captures the **complete physical memory** via `vm-memory.elf.tar.gz` as compensation. This provides equivalent forensic data (raw physical RAM dump) — developers must run `elf2dmp` offline to convert to Windows DMP format for WinDbg analysis. For Minidump data (crash stacks), the EventLog System.evtx (extracted via guestfish) contains the BugCheck event 1001 with stack information.
+**pagefile.sys** IS now pre-created in the golden image (4GB via `fsutil file createnew`). The Minidump infrastructure is in place; blocked only by the VirtIO StorPort limitation above. If SATA testing succeeds, Minidump will work automatically.
+
+The pipeline captures **complete physical memory** via `vm-memory.elf.tar.gz` (always works, hypervisor-level). Developers run `elf2dmp` offline to convert to WinDbg format. System.evtx Event 1001 (BugCheck) provides equivalent crash signature data without needing Minidump.
 
 ---
 
@@ -739,26 +740,30 @@ tail -30 $run/extraction.log
 
 ## Golden Image Requirements
 
-The Windows VM image must be pre-configured before pipeline use (one reboot required after applying):
+Use the provided scripts to configure the VM **before sealing the image** (one reboot required):
 
-```powershell
-# Run as Administrator before sealing the image
-$cc = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
-Set-ItemProperty $cc CrashDumpEnabled    7                          -Type DWord  # Automatic
-Set-ItemProperty $cc AutoReboot          0                          -Type DWord  # Stay frozen
-Set-ItemProperty $cc AlwaysKeepMemoryDump 1                         -Type DWord
-Set-ItemProperty $cc DedicatedDumpFile   'C:\DedicatedDump.sys'     -Type ExpandString
+```bash
+# Scripts are in src/scripts/guest/
+# Run as Administrator inside the Windows VM:
 
-# Pre-allocate DedicatedDump.sys (RAM + 1MB)
-$size = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory + 1MB
-fsutil file createnew C:\DedicatedDump.sys $size
+# Step 1: Pre-reboot setup (installs QGA, pvpanic, crash dump config, pagefile.sys)
+.\golden-image-pre-reboot.ps1
+# Auto-reboots at end
 
-# Disable automatic pagefile (VirtIO Balloon blocks it on KVM anyway)
-$cs = Get-CimInstance Win32_ComputerSystem
-Set-CimInstance -InputObject $cs -Property @{ AutomaticManagedPagefile = $false }
+# Step 2: Post-reboot verification (8 checks, all must pass)
+.\golden-image-post-reboot.ps1
+# Expected: "All checks passed — safe to seal the golden image."
 ```
 
-Then reboot once: `virtctl stop <vm> -n <ns> && virtctl start <vm> -n <ns>`
+**What the scripts configure**:
+- QEMU Guest Agent (qemu-ga) — installed from virtio-win ISO, set to Automatic
+- pvpanic driver — signals BSOD to QEMU for crash-preserve behavior
+- Recovery mode disabled — prevents Win11 WinRE boot-loop after BSOD
+- Crash dump registry — `CrashDumpEnabled=7`, `AutoReboot=0`, `DedicatedDumpFile=C:\DedicatedDump.sys`
+- `DedicatedDump.sys` pre-allocated — RAM + 1MB via `fsutil file createnew`
+- `pagefile.sys` pre-allocated — 4GB, registered via WMI (enables Minidump if driver supports it)
+
+**Note**: Use `.NET WebClient` to download virtio-win ISO — `curl.exe` and BITS both fail in VM context.
 
 ---
 
@@ -806,8 +811,10 @@ apps/bsod-detector/
 │   │   │   └── collect-host-signals.sh        # KVM/Hyper-V signal parser
 │   │   └── guest/
 │   │       ├── README.md
-│   │       ├── configure-dumps.ps1            # Windows crash dump config
-│   │       └── clear-dumps.ps1                # Pre-test cleanup
+│   │       ├── configure-dumps.ps1            # Windows crash dump config (runtime)
+│   │       ├── clear-dumps.ps1                # Pre-test cleanup
+│   │       ├── golden-image-pre-reboot.ps1    # Golden image setup (before reboot)
+│   │       └── golden-image-post-reboot.ps1   # Golden image verification (after reboot)
 │   └── data/
 │       ├── crash-control.json                 # CrashControl registry values
 │       ├── bugcheck-codes.json                # Windows bugcheck code database
@@ -833,4 +840,4 @@ All variables use `BSOD_DET__` prefix (Red Hat Chaos Team convention):
 | `BSOD_DET__READY__TIMEOUT` | No | `300` | Watcher readiness timeout |
 | `BSOD_DET__PREFLIGHT__TIMEOUT` | No | `300` | Preflight timeout |
 | `BSOD_DET__GUESTFS__NTFS_IMAGE` | No | `quay.io/konveyor/oadp-vmfr-access:latest` | guestfs pod image override |
-| `BSOD_RECOVERY_IMAGE` | No | — | Digest-pinned recovery image |
+| `BSOD_DET__RECOVERY__IMAGE` | No | — | Digest-pinned recovery image |
