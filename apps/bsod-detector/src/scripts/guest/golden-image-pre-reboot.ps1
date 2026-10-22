@@ -88,16 +88,7 @@ if ($svc.Status -eq 'Running') {
     exit 1
 }
 
-# ── Step 6: Disable Windows automatic recovery mode ───────────────────────
-# Prevents Win11 from entering WinRE/self-diagnosis loop after BSOD
-Write-Host "`n--- Disabling Windows recovery mode ---"
-bcdedit /set '{default}' bootstatuspolicy IgnoreAllFailures
-bcdedit /set '{default}' recoveryenabled No
-bcdedit /set '{bootmgr}' displaybootmenu No
-reagentc /disable
-Write-Host "OK: Windows automatic recovery disabled"
-
-# ── Step 7: Set crash dump registry parameters ────────────────────────────
+# ── Step 6: Set crash dump registry parameters ────────────────────────────
 Write-Host "`n--- Setting crash dump registry ---"
 $cc = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
 Set-ItemProperty -Path $cc -Name CrashDumpEnabled     -Value 7                         -Type DWord
