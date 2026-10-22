@@ -83,7 +83,7 @@ These scripts manage the full BSOD detection and artifact extraction pipeline or
 | `BSOD_DET__MEMORY__DUMP_PVC` | No | Memory dump PVC name |
 | `BSOD_DET__READY__TIMEOUT` | No | Watcher readiness timeout (default: 300s) |
 | `BSOD_DET__PREFLIGHT__TIMEOUT` | No | Preflight timeout (default: 300s) |
-| `BSOD_RECOVERY_IMAGE` | No | Digest-pinned guestfs image |
+| `BSOD_DET__RECOVERY__IMAGE` | No | Digest-pinned guestfs image |
 
 **Example**:
 ```bash
@@ -136,7 +136,8 @@ virtctl memory-dump remove
 ```
 bsod-screenshot.png          (VNC screenshot at crash)
 vm-memory.elf.tar.gz         (primary memory artifact ~1.5GB compressed)
-domain.xml                   (libvirt domain configuration at crash)
+domain-bsod.xml              (libvirt domain XML captured at crash moment — state=crashed/paused)
+domain.xml                   (pre-crash backup captured in Phase 2b)
 host-signals.json            (host diagnostics)
 launcher-compute.log         (KVM launcher logs)
 parse-dump-header.json       (bugcheck code stub — elf2dmp disabled)
@@ -258,7 +259,11 @@ guestFS_sda3/
   Windows/System32/winevt/Logs/
     System.evtx          (Windows System EventLog — 8MB typical)
     Application.evtx     (Windows Application EventLog — 6MB typical)
-parse-dump-header.json   (stub — on-disk dumps blocked on KVM)
+  domain-guestfs.xml     (copy of domain-bsod.xml for forensic comparison)
+Minidump/                (always created; contains all files from C:\Windows\Minidump\)
+MEMORY.DMP               (extracted from DedicatedDump.sys via guestfish stdout streaming;
+                          zero-filled on VirtIO — viostor issue #1629; real content expected with SATA)
+parse-dump-header.json   (stub — on-disk dumps blocked on VirtIO; real on SATA)
 events.json              (stub — run extract-evtx.py offline)
 checksums.sha256         (manifest of evidence files)
 extraction.log           (guestfish extraction trace)
@@ -267,11 +272,10 @@ extraction-summary.json  (artifact inventory and validation)
 
 **Why no EventLogs/ symlink**: `.evtx` files are directly accessible under `guestFS_<partition>/Windows/System32/winevt/Logs/`. Developer runs `extract-evtx.py` against this path directly.
 
-**Platform limitations (KVM + VirtIO Balloon)**:
-- `pagefile.sys` cannot be reliably created — Windows Server 2022 lazy pagefile allocation + balloon driver
-- `MEMORY.DMP` (on-disk): Not produced — `AutoReboot=0` prevents the boot that copies DedicatedDump.sys → MEMORY.DMP
-- `Minidump`: Not produced — requires pagefile which cannot be created
-- Primary dump artifact is always `vm-memory.elf.tar.gz` from KubeVirt
+**Platform limitations (KVM + VirtIO)**:
+- `MEMORY.DMP` / `Minidump`: viostor (virtio-blk) and vioscsi (virtio-scsi) both fail in crash dump miniport mode — `StorPortGetUncachedExtension` returns error, no bytes written (viostor issue [#1629](https://github.com/virtio-win/kvm-guest-drivers-windows/issues/1629)). SATA (storahci.sys — inbox driver) is expected to work.
+- `pagefile.sys` IS pre-created in golden image (4GB via fsutil) — Minidump infrastructure is ready; currently blocked only by the StorPort VirtIO limitation above.
+- Invalid MEMORY.DMP (zero-filled) does NOT flip `ok=false` — only required artifact types affect the pipeline verdict. `vm-memory.elf.tar.gz` is always the primary dump artifact.
 
 **Environment Variables**:
 
@@ -555,7 +559,8 @@ All variables follow Red Hat Chaos Team naming: `BSOD_DET__[<COMPONENT>__]<NAME>
 ```
 bsod-screenshot.png           BSOD screenshot at crash
 vm-memory.elf.tar.gz          Primary memory artifact (~1.5GB compressed)
-domain.xml                    Libvirt domain config at crash
+domain-bsod.xml               Libvirt domain XML captured at crash moment (state=crashed/paused)
+domain.xml                    Pre-crash backup from Phase 2b
 host-signals.json             Host KVM diagnostics
 launcher-compute.log          virt-launcher pod logs
 parse-dump-header.json        Bugcheck code (elf2dmp disabled by default)
@@ -608,7 +613,10 @@ guestFS_sda3/
   Windows/System32/winevt/Logs/
     System.evtx          (Windows System EventLog)
     Application.evtx     (Windows Application EventLog)
-parse-dump-header.json        (Dump metadata, or stub if no on-disk dump)
+  domain-guestfs.xml     (copy of domain-bsod.xml for forensic comparison with crash-time XML)
+Minidump/                (always created; all files from C:\Windows\Minidump\ if any)
+MEMORY.DMP               (streamed from DedicatedDump.sys via guestfish stdout; zero-filled on VirtIO)
+parse-dump-header.json        (Dump metadata, or stub with viostor #1629 explanation if zero-filled)
 events.json                   (Stub — run extract-evtx.py offline)
 checksums.sha256              (Manifest of all evidence files)
 extraction.log                (Guestfish extraction trace)

@@ -10,7 +10,7 @@ typeset crashType="${1:-}"; typeset vm="${BSOD_DET__VM__NAME:-}"; typeset ns="${
 typeset evidenceRoot="${BSOD_DET__EVIDENCE__DIR:-/mnt/persistent-bsod-evidence}"; typeset evidenceKind="${BSOD_EVIDENCE_VOLUME_KIND:-pvc}"
 typeset evidenceId="${BSOD_DET__EVIDENCE__STORAGE_ID:-shared-bsod-evidence}"; typeset memoryPvc="${BSOD_DET__MEMORY__DUMP_PVC:-${BSOD_DET__VM__NAME}-memdump}"
 # Kubernetes storage classes and container image for extraction pod
-typeset snapClass="${BSOD_DET__SNAPSHOT__CLASS:-ocs-storagecluster-rbdplugin-snapclass}"; typeset recoveryImage="${BSOD_RECOVERY_IMAGE:-quay.io/konveyor/oadp-vmfr-access:latest@sha256:e26c74ce8957768bd0bca7fdec01e28874c834cfdbea6fb9e8a5136ec7548cf0}"
+typeset snapClass="${BSOD_DET__SNAPSHOT__CLASS:-ocs-storagecluster-rbdplugin-snapclass}"; typeset recoveryImage="${BSOD_DET__RECOVERY__IMAGE:-quay.io/konveyor/oadp-vmfr-access:latest@sha256:e26c74ce8957768bd0bca7fdec01e28874c834cfdbea6fb9e8a5136ec7548cf0}"
 # Timeouts: how long to wait for watcher readiness and preflight validation
 typeset readyTimeout="${BSOD_DET__READY__TIMEOUT:-300}"
 typeset preflightTimeout="${BSOD_DET__PREFLIGHT__TIMEOUT:-300}"
@@ -30,9 +30,12 @@ function Die () { echo "trigger-bsod-intentional: ERROR: $*" >&2; exit 1; }
 function CleanupGuestfishCache () {
   [[ -n "${runTmpDir}" && -d "${runTmpDir}" ]] && rm -rf "${runTmpDir}" 2>/dev/null || true
 }
-# Cleanup on exit: kill background watcher process and remove this run's cache only
+# Cleanup on exit: kill background watcher process, delete temporary storage, and remove this run's cache.
+# This runs on both success and failure to ensure cluster doesn't accumulate stale DVs/PVCs.
 function Cleanup () {
   if [[ -n "${watcherPid}" ]]; then kill "${watcherPid}" 2>/dev/null || true; wait "${watcherPid}" 2>/dev/null || true; watcherPid=''; fi
+  # Cleanup temporary storage even on failure — prevents cluster clutter on aborted runs
+  CleanupTemporaryStorage 2>/dev/null || true
   CleanupGuestfishCache
   true
 }
@@ -56,6 +59,16 @@ case "${crashType}" in 0x01|0x02|0x03|0x04|0x05|0x06|0x07|0x08|0x09) ;; *) Die "
 
 # Phase 1: export run-scoped cache dir so nested guestfish calls use it
 export LIBGUESTFS_CACHEDIR="${runTmpDir}" LIBGUESTFS_TMPDIR="${runTmpDir}"
+
+# Phase 1a: Pre-cleanup — delete stale temporary DVs/PVCs from previous failed runs
+echo "trigger-bsod-intentional: cleaning up stale temporary storage from previous runs..."
+typeset memoryDumpDv="${BSOD_DET__VM__NAME}-memdump-dv"; typeset memoryDumpPvc="${memoryPvc}"
+typeset evidenceDv="shared-bsod-evidence-dv"; typeset evidencePvc="${evidenceId}"
+for resource in "dv/${memoryDumpDv}" "pvc/${memoryDumpPvc}" "dv/${evidenceDv}" "pvc/${evidencePvc}"; do
+  timeout --signal=TERM --kill-after=5 30 oc delete "${resource}" -n "${ns}" --ignore-not-found=true 2>/dev/null && \
+    echo "trigger-bsod-intentional: cleaned up stale ${resource}" || \
+    echo "trigger-bsod-intentional: WARN: ${resource} cleanup skipped (may not exist or is in use)"
+done
 
 # Phase 1b: validate NotMyFault binary exists on host (upload happens after preflight in Phase 2b)
 typeset nmfBin="${scriptDir}/notmyfaultc64.exe"
@@ -165,12 +178,32 @@ typeset watcherStatus=0; wait "${watcherPid}" || watcherStatus=$?; watcherPid=''
 jq -e --arg run "${runId}" '.ok == true and .runId == $run' "${outDir}/evidence-summary.json" >/dev/null || Die 'current-run evidence summary is absent or reports failure'
 echo "trigger-bsod-intentional: verified evidence package: ${outDir}"
 
-# Phase 7: Delete memory dump PVC so next run gets a fresh one via EnsureMemoryDumpPVC()
-# The evidence is already in the evidence PVC — the memory dump PVC is no longer needed.
-echo "trigger-bsod-intentional: deleting memory dump PVC ${memoryPvc} for fresh creation on next run..."
-timeout --signal=TERM --kill-after=5 60 oc --request-timeout=55s delete pvc "${memoryPvc}" -n "${ns}" \
-  --ignore-not-found=true 2>/dev/null && \
-  echo "trigger-bsod-intentional: memory dump PVC ${memoryPvc} deleted" || \
-  echo "trigger-bsod-intentional: WARN: memory dump PVC deletion failed (non-fatal)"
+# Phase 7: Delete temporary DVs and PVCs (memory-dump and evidence) so next run gets fresh ones.
+# Evidence artifacts have been exported to the evidence directory; DVs and PVCs are recreated dynamically on next run.
+# This cleanup runs on success; on failure, the trap handler still executes this to avoid cluster clutter.
+function CleanupTemporaryStorage () {
+  echo "trigger-bsod-intentional: cleaning up temporary DVs and PVCs for fresh creation on next run..."
+  typeset storageDeleteStatus=0
+  typeset memoryDumpDv="${BSOD_DET__VM__NAME}-memdump-dv"
+  typeset evidenceDv="shared-bsod-evidence-dv"
+  # Delete DVs first (they own the PVCs)
+  for dv in "${memoryDumpDv}" "${evidenceDv}"; do
+    echo "trigger-bsod-intentional: deleting DataVolume ${dv}..."
+    timeout --signal=TERM --kill-after=5 60 oc --request-timeout=55s delete dv "${dv}" -n "${ns}" \
+      --ignore-not-found=true 2>/dev/null && \
+      echo "trigger-bsod-intentional: DataVolume ${dv} deleted" || \
+      { storageDeleteStatus=$?; echo "trigger-bsod-intentional: WARN: DataVolume ${dv} deletion failed (non-fatal)"; }
+  done
+  # Then delete PVCs
+  for pvc in "${memoryPvc}" "shared-bsod-evidence"; do
+    echo "trigger-bsod-intentional: deleting PVC ${pvc}..."
+    timeout --signal=TERM --kill-after=5 60 oc --request-timeout=55s delete pvc "${pvc}" -n "${ns}" \
+      --ignore-not-found=true 2>/dev/null && \
+      echo "trigger-bsod-intentional: PVC ${pvc} deleted" || \
+      { storageDeleteStatus=$?; echo "trigger-bsod-intentional: WARN: PVC ${pvc} deletion failed (non-fatal)"; }
+  done
+  ((storageDeleteStatus == 0)) || echo "trigger-bsod-intentional: WARN: some storage deletions encountered errors (evidence still exported, cluster may have leftovers)"
+}
+CleanupTemporaryStorage
 
 true
