@@ -190,26 +190,13 @@ if (-not $VerifyOnly) {
     # Create the registry path if it doesn't exist yet
     if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
 
-    # Pre-create DedicatedDumpFile with size = RAM + 1MB (guarantees space for any dump type)
-    # This avoids depending on pagefile which may not be configured or may be disabled
-    if ($desired.Contains('DedicatedDumpFile') -and $desired['DedicatedDumpFile']) {
-        # Expand environment variables in the file path (e.g., %SystemRoot% → C:\Windows)
-        $dedicatedPath = [Environment]::ExpandEnvironmentVariables($desired['DedicatedDumpFile'])
-        # Only create if the file doesn't already exist
-        if (-not (Test-Path $dedicatedPath)) {
-            # Get the total physical RAM on the system
-            $ramBytes = $null
-            try { $ramBytes = [int64](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory } catch { }
-            # Use RAM+1MB if known, otherwise default to 16GB
-            $sizeBytes = if ($ramBytes) { $ramBytes + 1MB } else { 17179869184 }
-            # Create the file using fsutil (raw API, faster than PowerShell)
-            & fsutil file createnew $dedicatedPath $sizeBytes | Out-Null
-        }
-    }
+    # Remove DedicatedDumpFile if present — it forces StorPort crash miniport which fails on VirtIO (issue #1629).
+    # pagefile.sys (sized RAM+257MB) handles Phase 1 crash dump staging via normal I/O instead.
+    Remove-ItemProperty -Path $regPath -Name 'DedicatedDumpFile' -ErrorAction SilentlyContinue
 
     # NOTE: Pagefile configuration is NOT touched here (it's a golden image concern).
-    # VirtIO Balloon driver on KVM blocks pagefile.sys creation, so AutomaticManagedPagefile
-    # must be false before image sealing. DedicatedDumpFile handles dump staging without pagefile.
+    # golden-image-pre-reboot.ps1 pre-allocates pagefile.sys at RAM+257MB before sealing.
+    # pagefile.sys uses normal I/O for crash dump staging — works on all drivers (VirtIO, SATA, SCSI).
 
     # Write each desired registry value to the CrashControl registry path
     foreach ($k in $desired.Keys) {
@@ -265,34 +252,24 @@ try { $ramBytes = [int64](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
 
 # Evaluate whether the page file configuration is adequate
 $pfAdequate = $null
-if ($dedicated) {
-    # If DedicatedDumpFile is set, it handles dump staging independently of pagefile
-    $pfAdequate = $true
-} elseif ($pfEntries.Count -eq 0) {
-    # No page file AND no dedicated dump file = nowhere to store the dump (bad)
+if ($pfEntries.Count -eq 0) {
+    # No pagefile = nowhere to store the crash dump (bad)
     $pfAdequate = $false
-} elseif ($type -eq 'complete') {
-    # Complete dump requires page file size >= RAM + 1MB on the system volume
-    # Note: we can only verify this if the page file size is fixed; system-managed is unknown
+} else {
+    # Parse pagefile max size (format: "C:\pagefile.sys 16641 16641" = path min max)
     $maxMb = $null
-    # Parse page file entries (format: "C: 2048 4096" = drive: min-size max-size)
     foreach ($e in $pfEntries) {
-        # Split entry by whitespace, keep only numeric values
         $nums = @(($e -split '\s+') | Where-Object { $_ -match '^\d+$' })
-        # The max size is the second number (if present)
         if ($nums.Count -ge 2) { $maxMb = [int]$nums[1] }
     }
-    # Only report adequate/inadequate if we know both RAM and max page file size
+    # Adequacy: pagefile must be >= RAM + 257MB (buffer prevents Windows deallocation)
     if ($null -ne $ramBytes -and $null -ne $maxMb -and $maxMb -gt 0) {
-        # Check if max page file size >= (RAM + 1MB)
-        $pfAdequate = (([int64]$maxMb * 1MB) -ge ($ramBytes + 1MB))
+        $minRequiredMb = [math]::Ceiling(($ramBytes + (257 * 1MB)) / 1MB)
+        $pfAdequate = ([int64]$maxMb -ge $minRequiredMb)
     } else {
         # Can't determine adequacy (system-managed pagefile or unknown RAM)
         $pfAdequate = $null
     }
-} else {
-    # For kernel, automatic, or small dumps, any existing page file on the system drive suffices
-    $pfAdequate = $true
 }
 
 # STEP 8: Emit the final JSON result to stdout

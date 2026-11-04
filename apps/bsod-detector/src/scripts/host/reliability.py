@@ -369,7 +369,7 @@ REQUIRED_TYPES = {
 SEMANTIC_RESULTS = {"parse-dump-header.json", "events.json"}
 REQUIRED_RESULT_FILES = {
     "natural-rhov": SEMANTIC_RESULTS,
-    "intentional-rhov": {"parse-dump-header.json"},  # events.json (evtx) not required per lead review
+    "intentional-rhov": set(),  # MEMORY.DMP validation now happens in guestfs pod; parse-dump-header.json optional
     "rhov-snapshot-recovery": SEMANTIC_RESULTS,
 }
 
@@ -424,6 +424,13 @@ def write_summary(args: argparse.Namespace) -> None:
 
     # Exclude summary files generated after the manifest — they cannot be in it
     excluded = excluded | {"extraction-summary.json", "evidence-summary.json", "recovery-summary.json"}
+
+    # Deduplicate domain.xml and domain-bsod.xml if identical — keep only domain-bsod.xml (crash-time capture)
+    domain_xml = out / "domain.xml"
+    domain_bsod_xml = out / "domain-bsod.xml"
+    if domain_xml.exists() and domain_bsod_xml.exists():
+        if domain_xml.read_text(encoding="utf-8") == domain_bsod_xml.read_text(encoding="utf-8"):
+            domain_xml.unlink()
 
     for path in sorted(out.rglob("*")):
         # Skip symlinks — their targets in guestFS_<partition>/ are already covered as real files

@@ -11,7 +11,7 @@ typeset appDir=''; appDir="$(cd "${scriptDir}/../../.." && pwd)"
 typeset configureScript="${BSOD_DET__CONFIGURE__DUMPS:-${appDir}/src/scripts/guest/configure-dumps.ps1}"
 typeset crashControlFile="${BSOD_DET__CRASH_CONTROL__FILE:-${appDir}/src/data/crash-control.json}"
 typeset ns=''; typeset vm=''; typeset outDir=''; typeset metadataFile=''; typeset runId=''
-typeset snapClass="${BSOD_DET__SNAPSHOT__CLASS:-}"; typeset recoveryImage="${BSOD_DET__RECOVERY__IMAGE:-}"
+typeset snapClass="${BSOD_DET__SNAPSHOT__CLASS:-}"; typeset recoveryImage="${BSOD_DET__GUEST_FS__CTR_IMG:-quay.io/konveyor/oadp-vmfr-access:latest}"
 typeset diskTarget=''; typeset memoryPvc="${BSOD_DET__MEMORY__DUMP_PVC:-}"; typeset requireTrigger=0
 typeset evidenceRoot="${BSOD_DET__EVIDENCE__MOUNT:-}"; typeset evidenceKind="${BSOD_EVIDENCE_VOLUME_KIND:-}"
 typeset evidenceId="${BSOD_DET__EVIDENCE__STORAGE_ID:-}"
@@ -20,6 +20,7 @@ typeset -a guestAgent=(python3 "${scriptDir}/guest-agent.py")
 [[ -z "${BSOD_DET__GUEST_AGENT__BIN:-}" ]] || guestAgent=("${BSOD_DET__GUEST_AGENT__BIN}")
 
 function Die () { echo "preflight-rhov: ERROR: $*" >&2; exit 1; }
+function Log () { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; true; }
 function RequireCommand () { command -v "$1" >/dev/null 2>&1 || Die "required local tool '$1' is not installed"; }
 function ValidName () { [[ "$1" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || Die "$2 '$1' is not a valid Kubernetes DNS label"; }
 # RunTimed — used only for tools without built-in timeout flags (python3, virtctl, curl, findmnt).
@@ -49,12 +50,12 @@ while (($#)); do
     --evidence-volume-kind) evidenceKind="${2:?}"; shift 2 ;;
     --evidence-storage-id) evidenceId="${2:?}"; shift 2 ;;
     --snap-class) snapClass="${2:?}"; shift 2 ;;
-    --recovery-image) recoveryImage="${2:?}"; shift 2 ;;
+    --guest-fs-image) recoveryImage="${2:?}"; shift 2 ;;
     --memory-dump-pvc) memoryPvc="${2:?}"; shift 2 ;;
     --disk-target) diskTarget="${2:?}"; shift 2 ;;
     --require-trigger) requireTrigger=1; shift ;;
     -h|--help)
-      echo 'usage: preflight-rhov.sh --ns NS --vm VM --out RUN_DIR --metadata FILE --run-id ID --evidence-mount MOUNT --evidence-volume-kind pvc|network|csi --evidence-storage-id ID --snap-class CLASS --recovery-image IMAGE@sha256:DIGEST --memory-dump-pvc PVC [--disk-target vda] [--require-trigger]'
+      echo 'usage: preflight-rhov.sh --ns NS --vm VM --out RUN_DIR --metadata FILE --run-id ID --evidence-mount MOUNT --evidence-volume-kind pvc|network|csi --evidence-storage-id ID --snap-class CLASS [--guest-fs-image IMAGE] --memory-dump-pvc PVC [--disk-target vda] [--require-trigger]'
       exit 0 ;;
     *) Die "unknown argument: $1" ;;
   esac
@@ -63,7 +64,7 @@ done
 [[ -n "${ns}" && -n "${vm}" && -n "${outDir}" && -n "${metadataFile}" && -n "${runId}" ]] || Die '--ns, --vm, --out, --metadata, and --run-id are required'
 [[ "${runId}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{5,80}$ ]] || Die "run ID '${runId}' is invalid"
 [[ -n "${snapClass}" ]] || Die 'snapshot class is required'
-[[ "${recoveryImage}" =~ @sha256:[0-9a-fA-F]{64}$ ]] || Die 'recovery image must be digest-pinned'
+[[ -n "${recoveryImage}" ]] || Die 'guestfs image is required (default: quay.io/konveyor/oadp-vmfr-access:latest)'
 [[ -n "${memoryPvc}" ]] || Die 'a dedicated KubeVirt memory-dump PVC is required'
 case "${evidenceKind}" in pvc|network|csi) ;; *) Die 'evidence volume kind must explicitly be pvc, network, or csi' ;; esac
 [[ "${evidenceId}" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]+$ ]] || Die 'evidence storage ID is required and must be stable'
@@ -228,20 +229,30 @@ for permission in "${permissions[@]}"; do
   [[ "$(oc --request-timeout=30s auth can-i "${verb}" "${resource}" -n "${ns}")" == yes ]] || Die "RBAC denies '${verb} ${resource}'"
 done
 
-# Probe pod verifies the recovery image has bash + guestfish before watcher is armed.
+# Probe pod verifies the guestfs image has bash + guestfish before watcher is armed.
 probePod="bsod-probe-$(printf '%s' "${runId,,}" | tr -cd 'a-z0-9-' | cut -c1-35)-$$"
 jq -n --arg name "${probePod}" --arg ns "${ns}" --arg image "${recoveryImage}" \
   '{apiVersion:"v1",kind:"Pod",metadata:{name:$name,namespace:$ns},spec:{restartPolicy:"Never",automountServiceAccountToken:false,containers:[{name:"probe",image:$image,command:["/bin/bash","-ceu","command -v guestfish; command -v bash; guestfish --version"],securityContext:{allowPrivilegeEscalation:false,readOnlyRootFilesystem:true,capabilities:{drop:["ALL"]}}}]}}' |
-  oc --request-timeout=30s apply -f - 2>/dev/null >/dev/null || Die 'cannot create recovery-image capability probe'
+  oc --request-timeout=30s apply -f - 2>/dev/null >/dev/null || Die 'cannot create guestfs-image capability probe'
 probeCreated=1
-typeset probePhase=''; typeset probeDeadline=$((SECONDS + 120))
+Log "Waiting for guestfs-image probe to verify bash + guestfish (timeout: 300s)..."
+typeset probePhase=''; typeset probeDeadline=$((SECONDS + 300))
 while ((SECONDS < probeDeadline)); do
   probePhase="$(oc --request-timeout=30s get pod "${probePod}" -n "${ns}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-  [[ "${probePhase}" == Succeeded ]] && break
-  [[ "${probePhase}" == Failed ]] && Die 'recovery-image capability probe failed (bash/guestfish contract)'
+  if [[ "${probePhase}" == Succeeded ]]; then
+    Log "✅ guestfs-image probe succeeded (bash + guestfish verified)"
+    break
+  fi
+  if [[ "${probePhase}" == Failed ]]; then
+    typeset probeReason; probeReason="$(oc --request-timeout=30s get pod "${probePod}" -n "${ns}" -o jsonpath='{.status.containerStatuses[0].state.terminated.reason}' 2>/dev/null || echo 'unknown')"
+    Die "guestfs-image capability probe failed (bash/guestfish contract): ${probeReason}"
+  fi
   sleep 2
 done
-[[ "${probePhase}" == Succeeded ]] || Die 'recovery-image capability probe timed out'
+if [[ "${probePhase}" != Succeeded ]]; then
+  typeset probeEvents; probeEvents="$(oc --request-timeout=30s describe pod "${probePod}" -n "${ns}" 2>/dev/null | grep -A 5 'Events:' || echo '(no events captured)')"
+  Die "guestfs-image capability probe timed out (status: ${probePhase}). Image: ${recoveryImage}. Events: ${probeEvents}"
+fi
 Cleanup
 
 export BSOD_DET__NAMESPACE="${ns}" BSOD_DET__VM__NAME="${vm}" BSOD_DET__POD__NAME="${pod}" BSOD_DET__DOMAIN__NAME="${dom}"
@@ -320,14 +331,14 @@ jq -n --arg runId "${runId}" --arg outputDir "${outDir}" --arg namespace "${ns}"
   --arg pod "${pod}" --arg domain "${dom}" --arg node "${node}" --arg guestPvc "${guestPvc}" \
   --arg diskName "${diskName}" --arg diskTarget "${diskTarget}" --arg memoryDumpPvc "${memoryPvc}" \
   --arg snapshotClass "${snapClass}" --arg storageClass "${storageClass}" --arg storageProvisioner "${provisioner}" \
-  --arg storageSize "${storageSize}" --arg volumeMode "${volumeMode}" --arg recoveryImage "${recoveryImage}" \
+  --arg storageSize "${storageSize}" --arg volumeMode "${volumeMode}" --arg guestFsImage "${recoveryImage}" \
   --arg mountTarget "${mountTarget}" --arg mountSource "${mountSource}" --arg mountFs "${mountFs}" \
   --arg mountDevice "${mountDevice}" --arg mountKind "${evidenceKind}" --arg mountId "${evidenceId}" \
   --argjson armedEpoch "${armedEpoch}" --argjson inventory "${inventory}" \
   '{schema:2,runId:$runId,outputDir:$outputDir,namespace:$namespace,vm:$vm,launcherPod:$pod,domain:$domain,node:$node,
     guestPvc:$guestPvc,diskName:$diskName,diskTarget:$diskTarget,memoryDumpPvc:$memoryDumpPvc,
     snapshotClass:$snapshotClass,storageClass:$storageClass,storageProvisioner:$storageProvisioner,
-    storageSize:$storageSize,volumeMode:$volumeMode,recoveryImage:$recoveryImage,recoveryImageContract:"bash+guestfish-v1",
+    storageSize:$storageSize,volumeMode:$volumeMode,guestFsImage:$guestFsImage,guestFsContract:"bash+guestfish-v1",
     armedEpoch:$armedEpoch,preCrashInventory:$inventory,
     evidenceMount:{target:$mountTarget,source:$mountSource,fsType:$mountFs,device:$mountDevice,kind:$mountKind,id:$mountId}}' > "${temporary}"
 chmod 0600 "${temporary}"; mv -f "${temporary}" "${metadataFile}"

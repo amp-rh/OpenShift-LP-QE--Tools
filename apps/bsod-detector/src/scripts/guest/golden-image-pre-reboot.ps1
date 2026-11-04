@@ -98,6 +98,9 @@ reagentc /disable
 Write-Host "OK: Windows automatic recovery disabled"
 
 # ── Step 7: Set crash dump registry parameters ────────────────────────────
+# CrashDumpEnabled=7 (Automatic): writes kernel pages to pagefile.sys at crash time via normal I/O.
+# No DedicatedDumpFile — that forces StorPort crash miniport which fails on VirtIO (issue #1629).
+# pagefile.sys is used naturally for Phase 1 staging (normal I/O, always works on QEMU KVM).
 Write-Host "`n--- Setting crash dump registry ---"
 $cc = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
 Set-ItemProperty -Path $cc -Name CrashDumpEnabled     -Value 7                         -Type DWord
@@ -107,34 +110,25 @@ Set-ItemProperty -Path $cc -Name Overwrite             -Value 1                 
 Set-ItemProperty -Path $cc -Name LogEvent              -Value 1                         -Type DWord
 Set-ItemProperty -Path $cc -Name DumpFile              -Value '%SystemRoot%\MEMORY.DMP' -Type ExpandString
 Set-ItemProperty -Path $cc -Name MinidumpDir           -Value '%SystemRoot%\Minidump'   -Type ExpandString
-Set-ItemProperty -Path $cc -Name DedicatedDumpFile     -Value 'C:\DedicatedDump.sys'    -Type ExpandString
-Write-Host "OK: Crash dump registry set"
+# Remove DedicatedDumpFile if previously set — it forces StorPort miniport which fails on VirtIO
+Remove-ItemProperty -Path $cc -Name DedicatedDumpFile -ErrorAction SilentlyContinue
+Write-Host "OK: Crash dump registry set (CrashDumpEnabled=1, no DedicatedDumpFile)"
 
-# ── Step 8: Pre-allocate DedicatedDump.sys (RAM + 1MB) ───────────────────
-# Allows Windows crash dump handler to write without pagefile on VirtIO.
-# On SATA (storahci.sys) this file receives real crash dump content.
-Write-Host "`n--- Pre-allocating DedicatedDump.sys ---"
-$ramBytes = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
-$dumpSize = $ramBytes + (1024 * 1024)
-if (-not (Test-Path 'C:\DedicatedDump.sys')) {
-    fsutil file createnew C:\DedicatedDump.sys $dumpSize
-    Write-Host "OK: Created DedicatedDump.sys = $([math]::Round($dumpSize / 1GB, 1)) GB"
-} else {
-    Write-Host "OK: DedicatedDump.sys already exists = $([math]::Round((Get-Item 'C:\DedicatedDump.sys').Length / 1GB, 1)) GB"
-}
-
-# ── Step 9: Pre-allocate pagefile.sys (4GB) and disable automatic management
-# Minidump requires an active pagefile. Pre-create so kernel loads it at next boot.
-# On SATA (storahci.sys) with active pagefile, Minidump is written on BSOD.
+# ── Step 8: Pre-allocate pagefile.sys (RAM + 257MB) and disable automatic management
+# Complete dump (CrashDumpEnabled=1) requires pagefile >= RAM size.
+# +257MB buffer prevents Windows from deallocating the pagefile on systems with high free RAM.
+# pagefile.sys uses normal I/O for crash dump staging — works on all drivers (VirtIO, SATA, SCSI).
 Write-Host "`n--- Pre-allocating pagefile.sys ---"
 $mm = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
 Set-ItemProperty -Path $mm -Name AutomaticManagedPagefile -Value 0 -Type DWord
 
+$ramBytes = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
+$pagefileSizeBytes = $ramBytes + (257 * 1024 * 1024)  # RAM + 257MB
+$pagefileSizeMB = [math]::Round($pagefileSizeBytes / 1MB, 0)
 $pagefilePath = 'C:\pagefile.sys'
-$pagefileSize = 4294967296  # 4GB
 if (-not (Test-Path $pagefilePath)) {
-    fsutil file createnew $pagefilePath $pagefileSize
-    Write-Host "OK: Created pagefile.sys = 4 GB"
+    fsutil file createnew $pagefilePath $pagefileSizeBytes
+    Write-Host "OK: Created pagefile.sys = ${pagefileSizeMB} MB ($([math]::Round($pagefileSizeBytes / 1GB, 1)) GB)"
 } else {
     Write-Host "OK: pagefile.sys already exists ($([math]::Round((Get-Item $pagefilePath -Force).Length / 1GB, 1)) GB)"
 }
@@ -143,10 +137,10 @@ $existing = Get-CimInstance Win32_PageFileSetting -Filter "Name='C:\\pagefile.sy
 if (-not $existing) {
     New-CimInstance -ClassName Win32_PageFileSetting -Property @{
         Name        = 'C:\pagefile.sys'
-        InitialSize = 4096
-        MaximumSize = 4096
+        InitialSize = $pagefileSizeMB
+        MaximumSize = $pagefileSizeMB
     }
-    Write-Host "OK: pagefile.sys registered via WMI (4096MB fixed)"
+    Write-Host "OK: pagefile.sys registered via WMI (${pagefileSizeMB} MB fixed)"
 } else {
     Write-Host "OK: pagefile.sys already registered in WMI"
 }

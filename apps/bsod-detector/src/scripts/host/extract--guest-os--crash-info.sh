@@ -89,9 +89,8 @@ function Cleanup () {
     typeset podName="${1:?}"; (($#)) && shift
     [ -z "${podName}" ] || {
         oc -n "${ns}" delete "pod/${podName}" \
-            --ignore-not-found
-        oc -n "${ns}" wait "pod/${podName}" \
-            --for=delete \
+            --ignore-not-found \
+            --wait=true \
             --timeout=60s
     }
     true
@@ -233,31 +232,52 @@ while IFS= read -r ntfsPart; do
         [[ "${dst}" == /* ]] || dst="/${dst#/}"
         dst="${podTmp}${dst}"
         while [[ "${dst}" == */ ]]; do dst="${dst%/}"; done
-        {
+
+        if [[ "${src}" == */pagefile.sys ]]; then
+            # pagefile.sys: use guestfish download to stage inside pod then archive with EVTX.
+            # download reads the file sequentially (not sparse-aware like copy-out may be),
+            # staging to ${dst} (== ${podTmp}/MEMORY.DMP) so the existing tar step includes it.
+            # Trade-off: pod /tmp needs ~16GB free for the staged dump before archiving.
             oc -n "${ns}" exec "pod/${helperPod}" \
                 -c "${helperPodCtr}" \
                 -- \
-                bash -o pipefail -O inherit_errexit -euxc '
-                    typeset ntfsPart="${1:?}"; (($#)) && shift
-                    typeset src="${1:?}"; (($#)) && shift
-                    typeset dst="${1:?}"; (($#)) && shift
+                mkdir -p "${dst%/*}" || continue
+            oc -n "${ns}" exec "pod/${helperPod}" \
+                -c "${helperPodCtr}" \
+                -- \
+                guestfish \
+                -ra /dev/vda \
+                run \
+                : mount-ro "${ntfsPart}" / \
+                : download "${src}" "${dst}" \
+                : umount-all || continue
+        else
+            {
+                oc -n "${ns}" exec "pod/${helperPod}" \
+                    -c "${helperPodCtr}" \
+                    -- \
+                    bash -o pipefail -O inherit_errexit -euxc '
+                        typeset ntfsPart="${1:?}"; (($#)) && shift
+                        typeset src="${1:?}"; (($#)) && shift
+                        typeset dst="${1:?}"; (($#)) && shift
 
-                    mkdir -p "${dst%/*}"
-                    (
-                        exec -a virt-sh guestfish \
-                            -ra /dev/vda \
-                            run \
-                            : mount-ro "${ntfsPart}" / \
-                            : copy-out "${src}" "${dst%/*}" \
-                            : umount-all
-                    )
-                    [ "${src##*/}" = "${dst##*/}" ] ||
-                    mv -T -- "${dst%/*}/${src##*/}" "${dst}"
+                        mkdir -p "${dst%/*}"
+                        (
+                            exec -a virt-sh guestfish \
+                                -ra /dev/vda \
+                                run \
+                                : mount-ro "${ntfsPart}" / \
+                                : copy-out "${src}" "${dst%/*}" \
+                                : umount-all
+                        )
+                        [ "${src##*/}" = "${dst##*/}" ] ||
+                        mv -T -- "${dst%/*}/${src##*/}" "${dst}"
 
-                    true
-                ' '' "${ntfsPart}" "${src}" "${dst}" ||
-            continue
-        }
+                        true
+                    ' '' "${ntfsPart}" "${src}" "${dst}" ||
+                continue
+            }
+        fi
     done
     {
         oc -n "${ns}" exec \

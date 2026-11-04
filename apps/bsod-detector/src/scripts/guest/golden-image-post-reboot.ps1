@@ -63,17 +63,7 @@ if ($recoveryEna -match "No") {
     Write-Error "FAIL: recoveryenabled not set to No"; $failed = $true
 }
 
-# ── Step 5: Verify DedicatedDump.sys ──────────────────────────────────────
-Write-Host "`n--- Checking DedicatedDump.sys ---"
-$f = Get-Item 'C:\DedicatedDump.sys' -ErrorAction SilentlyContinue
-if ($f -and $f.Length -gt 0) {
-    Write-Host "OK: DedicatedDump.sys = $([math]::Round($f.Length / 1GB, 1)) GB"
-} else {
-    Write-Error "FAIL: DedicatedDump.sys missing or empty"
-    $failed = $true
-}
-
-# ── Step 6: Verify crash dump registry settings ────────────────────────────
+# ── Step 5: Verify crash dump registry settings ────────────────────────────
 Write-Host "`n--- Checking crash dump registry ---"
 $cc = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
 $expected = @{
@@ -82,7 +72,6 @@ $expected = @{
     AlwaysKeepMemoryDump = 1
     Overwrite            = 1
     LogEvent             = 1
-    DedicatedDumpFile    = 'C:\DedicatedDump.sys'
 }
 foreach ($key in $expected.Keys) {
     $actual = (Get-ItemProperty -Path $cc -Name $key -ErrorAction SilentlyContinue).$key
@@ -92,6 +81,14 @@ foreach ($key in $expected.Keys) {
         Write-Error "FAIL: $key = '$actual' (expected '$($expected[$key])')"
         $failed = $true
     }
+}
+# DedicatedDumpFile must NOT be set — it forces StorPort crash miniport which fails on VirtIO
+$dedicatedDump = (Get-ItemProperty -Path $cc -Name DedicatedDumpFile -ErrorAction SilentlyContinue).DedicatedDumpFile
+if ($dedicatedDump) {
+    Write-Error "FAIL: DedicatedDumpFile = '$dedicatedDump' (must be absent — forces StorPort miniport, fails on VirtIO)"
+    $failed = $true
+} else {
+    Write-Host "OK: DedicatedDumpFile = (not set) — pagefile.sys used via normal I/O"
 }
 
 # ── Step 7: Verify AutomaticManagedPagefile disabled ──────────────────────
@@ -107,22 +104,15 @@ if (-not $auto) {
 # ── Step 8: Verify pagefile.sys is active in running kernel ───────────────
 Write-Host "`n--- Checking pagefile.sys ---"
 $pf = Get-CimInstance Win32_PageFileUsage | Where-Object { $_.Name -like 'C:\*' }
-if ($pf -and $pf.AllocatedBaseSize -gt 0) {
-    Write-Host "OK: pagefile.sys active — AllocatedBaseSize=$($pf.AllocatedBaseSize) MB, CurrentUsage=$($pf.CurrentUsage) MB"
-} else {
-    Write-Error "FAIL: pagefile.sys not active in running kernel — Minidump will not be written on BSOD"
+$ramMB = [math]::Round((Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory / 1MB, 0)
+$expectedMinMB = $ramMB + 257
+if ($pf -and $pf.AllocatedBaseSize -ge $expectedMinMB) {
+    Write-Host "OK: pagefile.sys active — AllocatedBaseSize=$($pf.AllocatedBaseSize) MB (>= RAM+257MB=${expectedMinMB} MB), CurrentUsage=$($pf.CurrentUsage) MB"
+} elseif ($pf -and $pf.AllocatedBaseSize -gt 0) {
+    Write-Error "FAIL: pagefile.sys active but too small — AllocatedBaseSize=$($pf.AllocatedBaseSize) MB (expected >= ${expectedMinMB} MB = RAM+257MB)"
     $failed = $true
-}
-
-# ── Step 9: Verify DedicatedDumpFile registry is active ───────────────────
-Write-Host "`n--- Checking DedicatedDumpFile kernel state ---"
-$kd = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl' -Name DedicatedDumpFile -ErrorAction SilentlyContinue).DedicatedDumpFile
-if ($kd -eq 'C:\DedicatedDump.sys') {
-    Write-Host "OK: DedicatedDumpFile = C:\DedicatedDump.sys"
-    Write-Host "    NOTE: On SATA (storahci.sys) crash dumps write real content."
-    Write-Host "          On VirtIO (viostor/vioscsi) this file stays zero-filled — StorPort limitation #1629."
 } else {
-    Write-Error "FAIL: DedicatedDumpFile not set correctly (got: '$kd')"
+    Write-Error "FAIL: pagefile.sys not active in running kernel — crash dump will not be written on BSOD"
     $failed = $true
 }
 
