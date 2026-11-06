@@ -49,19 +49,19 @@ if ($pvpanicSys) {
 }
 
 # ── Step 4: Verify recovery mode disabled ─────────────────────────────────
-Write-Host "`n--- Checking recovery settings ---"
-$bootStatus  = bcdedit /enum '{default}' | Select-String "bootstatuspolicy"
-$recoveryEna = bcdedit /enum '{default}' | Select-String "recoveryenabled"
-if ($bootStatus -match "IgnoreAllFailures") {
-    Write-Host "OK: bootstatuspolicy = IgnoreAllFailures"
-} else {
-    Write-Error "FAIL: bootstatuspolicy not set to IgnoreAllFailures"; $failed = $true
-}
-if ($recoveryEna -match "No") {
-    Write-Host "OK: recoveryenabled = No"
-} else {
-    Write-Error "FAIL: recoveryenabled not set to No"; $failed = $true
-}
+#Write-Host "`n--- Checking recovery settings ---"
+#$bootStatus  = bcdedit /enum '{default}' | Select-String "bootstatuspolicy"
+#$recoveryEna = bcdedit /enum '{default}' | Select-String "recoveryenabled"
+#if ($bootStatus -match "IgnoreAllFailures") {
+#    Write-Host "OK: bootstatuspolicy = IgnoreAllFailures"
+#} else {
+#    Write-Error "FAIL: bootstatuspolicy not set to IgnoreAllFailures"; $failed = $true
+#}
+#if ($recoveryEna -match "No") {
+#    Write-Host "OK: recoveryenabled = No"
+#} else {
+#    Write-Error "FAIL: recoveryenabled not set to No"; $failed = $true
+#}
 
 # ── Step 5: Verify crash dump registry settings ────────────────────────────
 Write-Host "`n--- Checking crash dump registry ---"
