@@ -16,7 +16,7 @@ typeset stageErrors=''; typeset pipelineLog=''; typeset summaryMode='natural-rho
 typeset -a guestAgent=(python3 "${scriptDir}/guest-agent.py")
 [[ -z "${BSOD_DET__GUEST_AGENT__BIN:-}" ]] || guestAgent=("${BSOD_DET__GUEST_AGENT__BIN}")
 typeset hostSignalsBin="${BSOD_DET__HOST_SIGNALS__BIN:-${scriptDir}/collect-host-signals.sh}"
-function Die () { echo "watch-crash: ERROR: $*" >&2; exit 1; }
+function Die () { echo "bsod-watcher: ERROR: $*" >&2; exit 1; }
 function RunTimed () { typeset seconds="${1:?}"; shift; timeout --signal=TERM --kill-after=5 "${seconds}" "$@"; }
 function Log () { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "${pipelineLog}"; true; }
 function RecordError () {
@@ -72,7 +72,7 @@ while (($#)); do
     --intentional) summaryMode='intentional-rhov'; shift ;;
     --no-restart) noRestart=1; shift ;;
     -h|--help)
-      echo 'usage: watch-crash.sh --ns NS --vm VM --out EVIDENCE_MOUNT_OR_RUN_DIR [--metadata PREFLIGHT.json --run-id ID] --evidence-mount MOUNT --evidence-volume-kind KIND --evidence-storage-id ID --snap-class CLASS --recovery-image IMAGE@sha256:DIGEST --memory-dump-pvc PVC [options]'
+      echo 'usage: bsod-watcher.sh --ns NS --vm VM --out EVIDENCE_MOUNT_OR_RUN_DIR [--metadata PREFLIGHT.json --run-id ID] --evidence-mount MOUNT --evidence-volume-kind KIND --evidence-storage-id ID --snap-class CLASS --recovery-image IMAGE@sha256:DIGEST --memory-dump-pvc PVC [options]'
       exit 0 ;;
     *) Die "unknown argument: $1" ;;
   esac
