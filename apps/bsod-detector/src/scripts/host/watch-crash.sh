@@ -281,7 +281,7 @@ function StopVM () {
 function Recover () {
   typeset recoveryBin="${scriptDir}/extract--guest-os--crash-info.sh"
   [[ -x "${recoveryBin}" ]] || { RecordError recovery "recovery script missing: ${recoveryBin}"; return 1; }
-  "${recoveryBin}" --metadata "${metadataFile}" --out "${outDir}" >>"${pipelineLog}" 2>&1
+  "${recoveryBin}" --metadata "${metadataFile}" >>"${pipelineLog}" 2>&1
 }
 function CrashResponse () {
   typeset state="${1:?}"; typeset failed=0; typeset monitorStatus=0
