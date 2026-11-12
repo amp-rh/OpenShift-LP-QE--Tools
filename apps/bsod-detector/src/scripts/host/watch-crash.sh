@@ -278,11 +278,8 @@ function StopVM () {
   done
   [[ -z "${phase}" || "${phase}" == Succeeded || "${phase}" == Failed ]] || { RecordError stop "offline deadline exceeded (phase=${phase})"; return 1; }
 }
-function RestartVM () {
-  if ((noRestart == 0)); then RunTimed 90 virtctl start "${vm}" -n "${ns}" >>"${pipelineLog}" 2>&1 || { RecordError restart 'virtctl start failed or timed out'; return 1; }; fi
-}
 function Recover () {
-  typeset recoveryBin="${scriptDir}/extract-crash-info.sh"
+  typeset recoveryBin="${scriptDir}/extract--guest-os--crash-info.sh"
   [[ -x "${recoveryBin}" ]] || { RecordError recovery "recovery script missing: ${recoveryBin}"; return 1; }
   "${recoveryBin}" --metadata "${metadataFile}" --out "${outDir}" >>"${pipelineLog}" 2>&1
 }
@@ -321,7 +318,7 @@ function CrashResponse () {
     fi
     sleep 3
   done
-  { StopVM && Recover && RestartVM; } || Fatal
+  { StopVM && Recover ; } || Fatal
   WriteSummary
 }
 Log "preflight passed; preparing watcher for ${ns}/${vm} (run=${runId}, disk=${diskTarget})"
