@@ -19,14 +19,13 @@
       "LogEvent": 1,
       "AutoReboot": 0,
       "MinidumpDir": "%SystemRoot%\\Minidump",
-      "DumpFile": "%SystemRoot%\\MEMORY.DMP",
-      "DedicatedDumpFile": "C:\\DedicatedDump.sys"
+      "DumpFile": "%SystemRoot%\\MEMORY.DMP"
     },
-    "notes": "CrashDumpEnabled=7 (Automatic). pagefile.sys cannot be created on KVM with VirtIO Balloon; full physical memory captured via KubeVirt vm-memory.elf.tar.gz. AutoReboot=0 keeps VM frozen. Minidump and on-disk MEMORY.DMP are blocked on this platform."
+    "notes": "CrashDumpEnabled=7 (Automatic). DedicatedDumpFile intentionally absent — it forces StorPort crash miniport which fails on VirtIO/SCSI (issue #1629). pagefile.sys (RAM+257MB) used for Phase 1 crash dump staging via normal I/O. AutoReboot=0 keeps VM frozen for offline extraction."
   },
   "pageFile": {
     "path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management",
     "value": "PagingFiles",
-    "notes": "A complete dump needs a system-managed or fixed page file on the system drive at least as large as physical RAM (+1MB). Kernel/automatic dumps need less but still require a page file on the system volume, or a DedicatedDumpFile configured under CrashControl."
+    "notes": "pagefile.sys sized at RAM+257MB. Used for crash dump Phase 1 staging via normal I/O (not crash miniport). 257MB buffer prevents Windows from deallocating pagefile on high-free-RAM KVM systems."
   }
 }

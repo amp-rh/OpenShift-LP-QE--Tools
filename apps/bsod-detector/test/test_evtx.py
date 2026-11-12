@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import builtins
 import importlib.util
+import json
+import subprocess
 import sys
 import tempfile
 import types
@@ -9,7 +11,8 @@ from pathlib import Path
 from unittest import mock
 
 
-HOST = Path(__file__).resolve().parents[1] / "src" / "scripts" / "host"
+HOST = Path(__file__).resolve().parents[1] / "archieve" / "src" / "scripts" / "host"
+APP = Path(__file__).resolve().parents[1]
 
 
 class EvtxFailureTests(unittest.TestCase):
@@ -52,6 +55,25 @@ class EvtxFailureTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(self.module.EvtxParseError, "cannot parse"):
                 self.module.extract_events_from_evtx(fixture.name, [])
+
+    def test_cli_loads_active_parser_data_before_rejecting_missing_input(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(HOST / "extract-evtx.py"),
+                "--data-dir",
+                str(APP / "src" / "data"),
+                "/nonexistent/fixture.evtx",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        output = json.loads(result.stdout)
+        self.assertIn("file not found", output["error"])
+        self.assertNotIn("cannot load parser data", output["error"])
 
 
 if __name__ == "__main__":

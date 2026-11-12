@@ -10,7 +10,7 @@ typeset crashType="${1:-}"; typeset vm="${BSOD_DET__VM__NAME:-}"; typeset ns="${
 typeset evidenceRoot="${BSOD_DET__EVIDENCE__DIR:-/mnt/persistent-bsod-evidence}"; typeset evidenceKind="${BSOD_EVIDENCE_VOLUME_KIND:-pvc}"
 typeset evidenceId="${BSOD_DET__EVIDENCE__STORAGE_ID:-shared-bsod-evidence}"; typeset memoryPvc="${BSOD_DET__MEMORY__DUMP_PVC:-${BSOD_DET__VM__NAME}-memdump}"
 # Kubernetes storage classes and container image for extraction pod
-typeset snapClass="${BSOD_DET__SNAPSHOT__CLASS:-ocs-storagecluster-rbdplugin-snapclass}"; typeset recoveryImage="${BSOD_DET__RECOVERY__IMAGE:-quay.io/konveyor/oadp-vmfr-access:latest@sha256:e26c74ce8957768bd0bca7fdec01e28874c834cfdbea6fb9e8a5136ec7548cf0}"
+typeset snapClass="${BSOD_DET__SNAPSHOT__CLASS:-ocs-storagecluster-rbdplugin-snapclass}"; typeset recoveryImage="${BSOD_DET__GUEST_FS__CTR_IMG:-quay.io/konveyor/oadp-vmfr-access:latest}"
 # Timeouts: how long to wait for watcher readiness and preflight validation
 typeset readyTimeout="${BSOD_DET__READY__TIMEOUT:-300}"
 typeset preflightTimeout="${BSOD_DET__PREFLIGHT__TIMEOUT:-300}"
@@ -71,15 +71,16 @@ for resource in "dv/${memoryDumpDv}" "pvc/${memoryDumpPvc}" "dv/${evidenceDv}" "
 done
 
 # Phase 1b: validate NotMyFault binary exists on host (upload happens after preflight in Phase 2b)
+# If not present on host, configure-dumps.ps1 downloads it directly on the guest from Sysinternals.
 typeset nmfBin="${scriptDir}/notmyfaultc64.exe"
-[[ -f "${nmfBin}" ]] || Die "notmyfaultc64.exe not found at ${nmfBin} — add it to crash-injector/"
-typeset nmfExpectedSize; nmfExpectedSize="$(stat -c%s "${nmfBin}")"
+[[ -f "${nmfBin}" ]] || { echo "trigger-bsod-intentional: WARN: notmyfaultc64.exe not found at ${nmfBin} — configure-dumps.ps1 will download it on the guest" >&2; }
+typeset nmfExpectedSize=''; [[ -f "${nmfBin}" ]] && nmfExpectedSize="$(stat -c%s "${nmfBin}")"
 
 # Phase 2: Preflight validation - verify cluster state, VM existence, and mount points are valid
 mkdir "${outDir}" || Die "cannot create unique run directory ${outDir}"
 timeout --signal=TERM --kill-after=5 1800 "${hostDir}/preflight-rhov.sh" --ns "${ns}" --vm "${vm}" --out "${outDir}" --metadata "${metadataFile}" --run-id "${runId}" \
   --evidence-mount "${evidenceRoot}" --evidence-volume-kind "${evidenceKind}" --evidence-storage-id "${evidenceId}" \
-  --snap-class "${snapClass}" --recovery-image "${recoveryImage}" --memory-dump-pvc "${memoryPvc}" --require-trigger
+  --snap-class "${snapClass}" --guest-fs-image "${recoveryImage}" --memory-dump-pvc "${memoryPvc}" --require-trigger
 # Extract launcher pod name and domain from preflight metadata for guest agent access
 BSOD_DET__POD__NAME="$(jq -er .launcherPod "${metadataFile}")"; export BSOD_DET__POD__NAME
 BSOD_DET__DOMAIN__NAME="$(jq -er .domain "${metadataFile}")"; export BSOD_DET__DOMAIN__NAME
@@ -111,11 +112,12 @@ timeout --signal=TERM --kill-after=5 30 oc --request-timeout=25s exec -n "${ns}"
   " 2>/dev/null && echo "trigger-bsod-intentional: domain patched successfully" || \
   echo "trigger-bsod-intentional: WARN: domain patch failed (non-fatal — evidence capture may be limited)"
 
-# Pre-capture domain.xml while pod is still Running (domain config doesn't change on crash).
-# If pod goes Failed after BSOD, oc exec will fail — this pre-captured copy is the fallback.
+# Pre-capture domain.xml while pod is still Running — fallback if pod goes Failed after BSOD.
+# After crash, watch-crash.sh captures domain-bsod.xml; both are compared and pre-crash copy removed if identical.
+typeset preCrashXml="${outDir}/domain.xml"
 timeout --signal=TERM --kill-after=5 30 oc --request-timeout=25s exec -n "${ns}" "${launcherPod}" -- \
-  virsh dumpxml "${domainName}" > "${outDir}/domain.xml" 2>/dev/null && \
-  echo "trigger-bsod-intentional: domain.xml pre-captured ($(wc -c < "${outDir}/domain.xml") bytes)" || \
+  virsh dumpxml "${domainName}" > "${preCrashXml}" 2>/dev/null && \
+  echo "trigger-bsod-intentional: domain.xml pre-captured ($(wc -c < "${preCrashXml}") bytes)" || \
   echo "trigger-bsod-intentional: WARN: domain.xml pre-capture failed (non-fatal)"
 
 # Always capture VMI spec via Kubernetes API — available even when pod is Failed/OOMKilled.
@@ -129,9 +131,9 @@ timeout --signal=TERM --kill-after=5 15 oc --request-timeout=10s get vmi "${vm}"
 # Skipped if binary already present with correct size (golden image pre-installs it).
 typeset nmfGuestSize; nmfGuestSize="$(timeout --signal=TERM --kill-after=5 15 python3 "${hostDir}/guest-agent.py" exec powershell.exe -NoProfile -Command \
   "(Get-Item 'C:\Temp\nmf\notmyfaultc64.exe' -ErrorAction SilentlyContinue)?.Length" 2>/dev/null || true)"
-if [[ "${nmfGuestSize}" == *"${nmfExpectedSize}"* ]]; then
+if [[ -f "${nmfBin}" ]] && [[ "${nmfGuestSize}" == *"${nmfExpectedSize}"* ]]; then
   echo "trigger-bsod-intentional: NotMyFault present with correct size (${nmfExpectedSize} bytes) — skipping upload"
-else
+elif [[ -f "${nmfBin}" ]]; then
   echo "trigger-bsod-intentional: NotMyFault missing or wrong size (guest=${nmfGuestSize}, expected=${nmfExpectedSize}) — uploading..."
   timeout --signal=TERM --kill-after=5 60 python3 "${hostDir}/guest-agent.py" exec powershell.exe -NoProfile -Command \
     "New-Item -ItemType Directory -Force -Path 'C:\Temp\nmf' | Out-Null" || Die 'cannot create C:\Temp\nmf on guest'
@@ -142,6 +144,8 @@ else
   timeout --signal=TERM --kill-after=5 15 python3 "${hostDir}/guest-agent.py" exec powershell.exe -NoProfile -Command \
     "Unblock-File -Path 'C:\Temp\nmf\notmyfaultc64.exe' -ErrorAction SilentlyContinue" 2>/dev/null || true
   echo "trigger-bsod-intentional: NotMyFault uploaded and unblocked (${nmfExpectedSize} bytes)"
+else
+  echo "trigger-bsod-intentional: notmyfaultc64.exe not on host — configure-dumps.ps1 handles guest download" >&2
 fi
 
 # Phase 3: Guest cleanup - ensure no stale dumps from previous runs exist on the VM
@@ -155,7 +159,7 @@ jq -e '.memory == false and .minidumpCount == 0' <<<"${cleanupResult}" >/dev/nul
 bash "${hostDir}/watch-crash.sh" \
   --ns "${ns}" --vm "${vm}" --out "${outDir}" --metadata "${metadataFile}" --run-id "${runId}" --ready-file "${readyFile}" \
   --evidence-mount "${evidenceRoot}" --evidence-volume-kind "${evidenceKind}" --evidence-storage-id "${evidenceId}" \
-  --snap-class "${snapClass}" --recovery-image "${recoveryImage}" --memory-dump-pvc "${memoryPvc}" --intentional &
+  --snap-class "${snapClass}" --guest-fs-image "${recoveryImage}" --memory-dump-pvc "${memoryPvc}" --intentional &
 watcherPid=$!
 # Wait for watcher to signal readiness - means it's armed and watching for crash
 typeset readyDeadline=$((SECONDS + readyTimeout))

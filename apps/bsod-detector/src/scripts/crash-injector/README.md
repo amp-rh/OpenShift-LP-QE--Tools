@@ -38,7 +38,7 @@ BSOD_DET__CONFIRM_TARGET="win2022-vm-hjoshi1" \
 | `BSOD_DET__MEMORY__DUMP_PVC` | No | Memory dump PVC name |
 | `BSOD_DET__RECOVERY__IMAGE` | No | Digest-pinned guestfs recovery image |
 | `BSOD_DET__READY__TIMEOUT` | No | Watcher readiness timeout in seconds (default: 300) |
-| `BSOD_DET__PREFLIGHT__TIMEOUT` | No | Preflight timeout in seconds (default: 300) |
+| `BSOD_DET__PREFLIGHT__TIMEOUT` | No | Currently validated as a positive integer; the preflight invocation uses a fixed 1800-second timeout |
 
 **Execution Flow**:
 ```
@@ -48,14 +48,14 @@ BSOD_DET__CONFIRM_TARGET="win2022-vm-hjoshi1" \
    ├─ QGA ping (5 retries)
    ├─ configure-dumps.ps1 on guest → validate rebootRequired=false
    └─ Write recovery-metadata.json
-4. Start watch-crash.sh in background
-5. Clean old dumps from guest (MEMORY.DMP, Minidump/*.dmp)
+4. Clean stale guest dumps (`MEMORY.DMP`, `Minidump/*.dmp`) and verify they are absent
+5. Start `watch-crash.sh` in the background and wait for its run-ID readiness marker
 6. Inject BSOD via guest-agent.py exec-crash notmyfaultc64.exe /crash <type>
 7. watch-crash.sh detects BSOD:
    ├─ Captures vm-memory.elf.tar.gz via virtctl memory-dump
    ├─ Captures screenshot, domain.xml, host-signals.json
    ├─ Stops VM (virtctl stop)
-   ├─ Runs extract-crash-info.sh (offline NTFS extraction)
+   ├─ Runs extract--guest-os--crash-info.sh (offline NTFS extraction)
    ├─ Restarts VM (virtctl start)
    └─ Writes evidence-summary.json
 8. Return exit code (0=success, 1=failure)
@@ -63,7 +63,7 @@ BSOD_DET__CONFIRM_TARGET="win2022-vm-hjoshi1" \
 
 **Evidence Directory — All Files Explained**
 
-Every file is placed in `/mnt/persistent-bsod-evidence/{TIMESTAMP}-intentional-{PID}-{RANDOM}/`.
+By default, files are placed under `/mnt/persistent-bsod-evidence/{TIMESTAMP}-intentional-{PID}-{RANDOM}/`; `BSOD_DET__EVIDENCE__DIR` can select another validated persistent evidence mount.
 The table below shows what each file is, who writes it, and at which pipeline phase.
 
 | File | Size (typical) | Phase | Written by | What it contains |
@@ -76,17 +76,8 @@ The table below shows what each file is, who writes it, and at which pipeline ph
 | `domain.xml` | ~14 KB | Pre-BSOD (Phase 2b) | `watch-crash.sh` → `virsh dumpxml` | Pre-crash backup domain XML. Fallback if crash-time capture fails. |
 | `launcher-compute.log` | ~100–200 KB | At BSOD (VM still frozen) | `watch-crash.sh` → `oc logs` on virt-launcher pod | Raw KVM/QEMU compute container logs — hypervisor events, device errors, split-lock traps, memory balloon events, KVM internal errors |
 | `host-signals.json` | ~1.3 KB | At BSOD (VM still frozen) | `watch-crash.sh` → `collect-host-signals.sh` | Parsed summary of `launcher-compute.log` — split-lock trap count, KVM internal error count, Hyper-V feature states (tlbflush/ipi/vapic/spinlocks/synictimer), risk assessment |
-| `guestFS_sda3/Windows/System32/winevt/Logs/System.evtx` | ~8–9 MB | After VM stopped | `extract-crash-info.sh` → guestfs-ntfs pod → `guestfish` | Windows System EventLog extracted offline from NTFS partition. Contains crash event 1001 (BugCheck), dirty shutdown 6008, kernel events. `sda3` is dynamic — detected as whichever NTFS partition contains `C:\` |
-| `guestFS_sda3/Windows/System32/winevt/Logs/Application.evtx` | ~6 MB | After VM stopped | `extract-crash-info.sh` → guestfs-ntfs pod → `guestfish` | Windows Application EventLog extracted offline from NTFS partition. Contains Application/1001 LiveKernelEvent and app-level crash records |
-| `guestFS_sda3/domain-guestfs.xml` | ~14 KB | After VM stopped | `extract-crash-info.sh` | Copy of `domain-bsod.xml` placed alongside evtx files. Compare with `domain-bsod.xml` at root for forensic diff. |
-| `Minidump/` | varies | After VM stopped | `extract-crash-info.sh` | Directory always created. Contains all files from `C:\Windows\Minidump\` (any format). Empty if pagefile inactive or VirtIO driver blocked writes. |
-| `MEMORY.DMP` | 0–7.9 GB | After VM stopped | `extract-crash-info.sh` → guestfish stdout streaming | Extracted from `DedicatedDump.sys` offline. Zero-filled on VirtIO (viostor/vioscsi, issue #1629). Expected real content on SATA. Non-fatal if invalid — does not flip `ok=false`. |
-| `parse-dump-header.json` | ~146 B | After VM stopped | `extract-crash-info.sh` | Bugcheck code + parameters if MEMORY.DMP is valid. Stub with viostor #1629 explanation if zero-filled. |
-| `events.json` | ~162 B | After VM stopped | `extract-crash-info.sh` | **Stub** — run `extract-evtx.py` offline against `guestFS_*/Windows/System32/winevt/Logs/*.evtx` for crash detection JSON |
-| `checksums.sha256` | ~900 B | After VM stopped | `extract-crash-info.sh` | SHA-256 hashes of all evidence files (except log files and summary files generated after this point). Used by reliability.py to detect tampering |
-| `extraction.log` | ~3–5 KB | After VM stopped | `extract-crash-info.sh` | Step-by-step guestfish extraction trace — partition discovery, guestfish commands, oc cp transfers, file sizes |
-| `extraction-summary.json` | ~3 KB | After VM stopped | `reliability.py write-summary` | Artifact inventory from recovery phase — lists every file with type, format, size, sha256, valid flag. Reports missing types or invalid artifacts |
-| `stage-errors.jsonl` | 0 B (success) | Throughout | `watch-crash.sh` + `extract-crash-info.sh` | One JSON line per stage failure — stage name, error message, timestamp. Empty on clean run |
+| `guest-fs--crash-info--<partition>.tgz` | varies | After VM stopped | `extract--guest-os--crash-info.sh` | Recursive source-to-destination mapping: raw pagefile.sys bytes stored as MEMORY.DMP plus EVTX files; no conversion, loose outputs or automatic unpacking |
+| `stage-errors.jsonl` | 0 B (success) | Throughout | `watch-crash.sh` | Watcher stage failures; extraction does not append entries and inherits stdout/stderr into the watcher log. |
 | `evidence-summary.json` | ~3 KB | End of pipeline | `watch-crash.sh` → `reliability.py write-summary` | Final pipeline verdict — `ok: true/false`, consolidated stage errors, missing required artifact types, invalid artifacts |
 | `watcher.log` | ~100–120 KB | Throughout | `watch-crash.sh` | Full timestamped execution trace of the entire pipeline — QGA pings, BSOD detection, memory capture, stop VM, recovery, restart |
 
@@ -100,8 +91,8 @@ Pipeline start
   │
   ├─── [BSOD injected] notmyfaultc64.exe /crash 0x01
   │
-  ├─── [BSOD detected] QGA pings fail + domstate=running
-  │         → bsod-screenshot.png        (VNC, ~seconds)
+  ├─── [Capture decision] QGA miss threshold plus corroborating domain/VMI/pod evidence, or current KubeVirt Panicked event
+  │         → bsod-screenshot.png        (virtctl VNC screenshot, ~seconds)
   │         → vm-memory.elf.tar.gz       (virtctl memory-dump, ~5–10 min)
   │         → domain.xml                 (virsh dumpxml, ~seconds)
   │         → launcher-compute.log       (oc logs, ~seconds)
@@ -109,14 +100,8 @@ Pipeline start
   │
   ├─── [VM stopped] virtctl stop
   │
-  ├─── [Recovery] extract-crash-info.sh via guestfs-ntfs pod
-  │         → guestFS_sda3/...System.evtx      (guestfish + oc cp, ~30s)
-  │         → guestFS_sda3/...Application.evtx  (same session, ~30s)
-  │         → parse-dump-header.json     (stub)
-  │         → events.json               (stub)
-  │         → checksums.sha256
-  │         → extraction.log
-  │         → extraction-summary.json
+  ├─── [Recovery] extract--guest-os--crash-info.sh via guestfs-ntfs pod
+  │         → guest-fs--crash-info--<partition>.tgz     (independent readonly guestfish copy-out, then tar)
   │
   ├─── [VM restarted] virtctl start
   │
@@ -127,22 +112,21 @@ Pipeline start
 ```
 
 **Crash dump artifacts (platform-dependent)**:
-- `MEMORY.DMP` — Extracted from DedicatedDump.sys via guestfish stdout streaming. Zero-filled on VirtIO (viostor/vioscsi) due to StorPort crash dump miniport limitation ([#1629](https://github.com/virtio-win/kvm-guest-drivers-windows/issues/1629)). Expected to work on SATA (storahci.sys). Invalid MEMORY.DMP does NOT cause `ok=false`.
-- `Minidump/` — Directory always created. Files present if pagefile.sys was active and driver supports crash dumps. pagefile.sys IS pre-created (4GB) in the golden image.
-- `MEMORY.DMP` workaround — Use `vm-memory.elf.tar.gz` (always captured) + `elf2dmp` offline for equivalent forensic data.
+- `MEMORY.DMP` / `DedicatedDump.sys` — Not extracted by the retained archive-only extractor.
+- `Minidump/` — Not created or populated by the retained extractor.
+- Offline memory analysis — If KubeVirt capture succeeds, developers may attempt `elf2dmp` conversion of `vm-memory.elf.tar.gz`; neither capture nor conversion is guaranteed.
 - `vm-memory-windows.dmp` — elf2dmp conversion disabled (17GB, developer runs offline)
 - Volatility outputs — Developer tool, run offline against vm-memory.elf.tar.gz
 
 **Exit Codes**:
-- `0` — All required artifacts captured and validated
+- `0` — Pipeline gates returned success; this is not proof of complete extraction. The extractor bypasses its final validator and may return zero for an empty or missing archive
 - `1` — Pipeline failed — check `stage-errors.jsonl` then `watcher.log`
 
 **Diagnosing failures**:
 ```bash
-run=/mnt/persistent-bsod-evidence/<run-id>
+run=/path/to/run
 cat $run/stage-errors.jsonl | jq .
 cat $run/evidence-summary.json | jq '{ok,stageErrors,missingRequiredArtifactTypes,invalidArtifacts}'
-cat $run/extraction-summary.json | jq '{ok,stageErrors,missingRequiredArtifactTypes,invalidArtifacts}'
 ```
 
 ## Prerequisites
@@ -172,14 +156,14 @@ virtctl start win2022-vm-hjoshi1 -n windows-bsod
 |---|---|---|
 | QGA ping failed | `watcher.log` | VM frozen from previous BSOD — restart with virtctl |
 | rebootRequired=true | preflight output | CrashDumpEnabled changed — do virtctl stop/start |
-| source PVC attached | `extraction.log` | StopVM failed or VMI still running |
-| oc cp unexpected EOF | `extraction.log` | Retry — transient network issue |
-| missing: memory | `extraction-summary.json` | vm-memory.elf.tar.gz missing — virtctl dump failed |
-| missing: evtx | `extraction-summary.json` | No System.evtx on any NTFS partition |
+| source PVC attached | `watcher.log` | StopVM failed or VMI still running |
+| oc cp unexpected EOF | `watcher.log` | Retry — transient network issue |
+| missing: memory | `evidence-summary.json` / `watcher.log` | KubeVirt capture or export failed |
+| missing: evtx | `evidence-summary.json` | Watcher validator still requires loose EVTX; archive support is deferred |
 
 ## Related Scripts
 
 - `../host/preflight-rhov.sh` — VM validation and metadata generation
 - `../host/watch-crash.sh` — BSOD detection and memory capture
-- `../host/extract-crash-info.sh` — Offline NTFS artifact extraction
+- `../host/extract--guest-os--crash-info.sh` — Offline NTFS artifact extraction
 - `../guest/configure-dumps.ps1` — Windows crash dump configuration

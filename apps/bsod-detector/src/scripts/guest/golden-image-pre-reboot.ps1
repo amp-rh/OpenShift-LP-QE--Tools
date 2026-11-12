@@ -2,18 +2,38 @@
 # Supports all disk bus types: virtio (viostor), scsi (vioscsi), sata (storahci — inbox)
 # Installing all virtio-win drivers is safe — Windows loads only the one matching the presented hardware.
 
-# ── Step 1: Download virtio-win ISO ───────────────────────────────────────
+# ── Step 1: Download virtio-win ISO (skip if already latest) ──────────────
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-Write-Host "Downloading virtio-win ISO..."
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$wc = New-Object System.Net.WebClient
-$wc.DownloadFile(
-    "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso",
-    "C:\Temp\virtio-win.iso"
-)
-Write-Host "OK: Downloaded $(([math]::Round((Get-Item C:\Temp\virtio-win.iso).Length / 1MB, 0))) MB"
+$isoUrl  = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso"
+$isoPath = "C:\Temp\virtio-win.iso"
 
-$iso   = Mount-DiskImage -ImagePath C:\Temp\virtio-win.iso -PassThru
+# Check remote Last-Modified via HEAD request
+$req = [System.Net.HttpWebRequest]::Create($isoUrl)
+$req.Method = "HEAD"
+$resp = $req.GetResponse()
+$remoteLastModified = $resp.LastModified
+$resp.Close()
+Write-Host "Remote ISO Last-Modified: $remoteLastModified"
+
+$needDownload = $true
+if (Test-Path $isoPath) {
+    $localLastModified = (Get-Item $isoPath).LastWriteTimeUtc
+    if ($localLastModified -ge $remoteLastModified.ToUniversalTime()) {
+        Write-Host "OK: virtio-win ISO already latest (local=$localLastModified >= remote=$($remoteLastModified.ToUniversalTime())) — skipping download"
+        $needDownload = $false
+    } else {
+        Write-Host "ISO outdated (local=$localLastModified, remote=$($remoteLastModified.ToUniversalTime())) — re-downloading"
+    }
+}
+if ($needDownload) {
+    Write-Host "Downloading virtio-win ISO..."
+    $wc = New-Object System.Net.WebClient
+    $wc.DownloadFile($isoUrl, $isoPath)
+    Write-Host "OK: Downloaded $(([math]::Round((Get-Item $isoPath).Length / 1MB, 0))) MB"
+}
+
+$iso   = Mount-DiskImage -ImagePath $isoPath -PassThru
 $drive = ($iso | Get-Volume).DriveLetter
 Write-Host "OK: ISO mounted at ${drive}:\"
 
@@ -59,12 +79,25 @@ $pvpanicInf = Get-ChildItem "${drive}:\pvpanic" -Recurse -Filter "pvpanic.inf" `
 if ($pvpanicInf) {
     pnputil /add-driver $pvpanicInf.FullName /install | Out-Null
     Write-Host "OK: pvpanic.sys installed from $($pvpanicInf.FullName)"
+    # Register pvpanic device in registry so Windows activates it at boot
+    $pvpanicReg = 'HKLM:\SYSTEM\CurrentControlSet\Services\pvpanic'
+    if (-not (Test-Path $pvpanicReg)) {
+        New-Item -Path $pvpanicReg -Force | Out-Null
+    }
+    Set-ItemProperty -Path $pvpanicReg -Name Start -Value 3 -Type DWord
+    Set-ItemProperty -Path $pvpanicReg -Name Type  -Value 1 -Type DWord
+    Write-Host "OK: pvpanic registry entry set (Start=3 demand-load, Type=1 kernel driver)"
 } else {
     Write-Host "WARN: pvpanic.inf not found in ISO — pipeline will add pvpanic device via QMP at runtime"
 }
 
-Dismount-DiskImage -ImagePath C:\Temp\virtio-win.iso
-Remove-Item C:\Temp\virtio-win.iso -Force
+Dismount-DiskImage -ImagePath $isoPath
+# Keep ISO on disk for version check on future runs (only remove if re-downloaded)
+if (-not $needDownload) {
+    Write-Host "OK: ISO kept for future version checks"
+} else {
+    Write-Host "OK: ISO unmounted (kept on disk at $isoPath for future version checks)"
+}
 Write-Host "OK: ISO unmounted and removed"
 
 # ── Step 5: Verify and start QEMU Guest Agent ─────────────────────────────
@@ -88,7 +121,19 @@ if ($svc.Status -eq 'Running') {
     exit 1
 }
 
-# ── Step 6: Set crash dump registry parameters ────────────────────────────
+# ── Step 6: Disable Windows automatic recovery mode ───────────────────────
+# Prevents Win11 from entering WinRE/self-diagnosis loop after BSOD
+#Write-Host "`n--- Disabling Windows recovery mode ---"
+#bcdedit /set '{default}' bootstatuspolicy IgnoreAllFailures
+#bcdedit /set '{default}' recoveryenabled No
+#bcdedit /set '{bootmgr}' displaybootmenu No
+#reagentc /disable
+#Write-Host "OK: Windows automatic recovery disabled"
+
+# ── Step 7: Set crash dump registry parameters ────────────────────────────
+# CrashDumpEnabled=7 (Automatic): writes kernel pages to pagefile.sys at crash time via normal I/O.
+# No DedicatedDumpFile — that forces StorPort crash miniport which fails on VirtIO (issue #1629).
+# pagefile.sys is used naturally for Phase 1 staging (normal I/O, always works on QEMU KVM).
 Write-Host "`n--- Setting crash dump registry ---"
 $cc = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
 Set-ItemProperty -Path $cc -Name CrashDumpEnabled     -Value 7                         -Type DWord
@@ -98,49 +143,40 @@ Set-ItemProperty -Path $cc -Name Overwrite             -Value 1                 
 Set-ItemProperty -Path $cc -Name LogEvent              -Value 1                         -Type DWord
 Set-ItemProperty -Path $cc -Name DumpFile              -Value '%SystemRoot%\MEMORY.DMP' -Type ExpandString
 Set-ItemProperty -Path $cc -Name MinidumpDir           -Value '%SystemRoot%\Minidump'   -Type ExpandString
-Set-ItemProperty -Path $cc -Name DedicatedDumpFile     -Value 'C:\DedicatedDump.sys'    -Type ExpandString
-Write-Host "OK: Crash dump registry set"
+# Remove DedicatedDumpFile if previously set — it forces StorPort miniport which fails on VirtIO
+Remove-ItemProperty -Path $cc -Name DedicatedDumpFile -ErrorAction SilentlyContinue
+Write-Host "OK: Crash dump registry set (CrashDumpEnabled=1, no DedicatedDumpFile)"
 
-# ── Step 8: Pre-allocate DedicatedDump.sys (RAM + 1MB) ───────────────────
-# Allows Windows crash dump handler to write without pagefile on VirtIO.
-# On SATA (storahci.sys) this file receives real crash dump content.
-Write-Host "`n--- Pre-allocating DedicatedDump.sys ---"
-$ramBytes = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
-$dumpSize = $ramBytes + (1024 * 1024)
-if (-not (Test-Path 'C:\DedicatedDump.sys')) {
-    fsutil file createnew C:\DedicatedDump.sys $dumpSize
-    Write-Host "OK: Created DedicatedDump.sys = $([math]::Round($dumpSize / 1GB, 1)) GB"
-} else {
-    Write-Host "OK: DedicatedDump.sys already exists = $([math]::Round((Get-Item 'C:\DedicatedDump.sys').Length / 1GB, 1)) GB"
-}
-
-# ── Step 9: Pre-allocate pagefile.sys (4GB) and disable automatic management
-# Minidump requires an active pagefile. Pre-create so kernel loads it at next boot.
-# On SATA (storahci.sys) with active pagefile, Minidump is written on BSOD.
+# ── Step 8: Pre-allocate pagefile.sys (RAM + 257MB) and disable automatic management
+# Complete dump (CrashDumpEnabled=1) requires pagefile >= RAM size.
+# +257MB buffer prevents Windows from deallocating the pagefile on systems with high free RAM.
+# pagefile.sys uses normal I/O for crash dump staging — works on all drivers (VirtIO, SATA, SCSI).
 Write-Host "`n--- Pre-allocating pagefile.sys ---"
 $mm = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
 Set-ItemProperty -Path $mm -Name AutomaticManagedPagefile -Value 0 -Type DWord
 
+$ramBytes = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
+$pagefileSizeBytes = $ramBytes + (257 * 1024 * 1024)  # RAM + 257MB
+$pagefileSizeMB = [math]::Round($pagefileSizeBytes / 1MB, 0)
 $pagefilePath = 'C:\pagefile.sys'
-$pagefileSize = 4294967296  # 4GB
 if (-not (Test-Path $pagefilePath)) {
-    fsutil file createnew $pagefilePath $pagefileSize
-    Write-Host "OK: Created pagefile.sys = 4 GB"
+    fsutil file createnew $pagefilePath $pagefileSizeBytes
+    Write-Host "OK: Created pagefile.sys = ${pagefileSizeMB} MB ($([math]::Round($pagefileSizeBytes / 1GB, 1)) GB)"
 } else {
     Write-Host "OK: pagefile.sys already exists ($([math]::Round((Get-Item $pagefilePath -Force).Length / 1GB, 1)) GB)"
 }
 
-$existing = Get-CimInstance Win32_PageFileSetting -Filter "Name='C:\\pagefile.sys'" -ErrorAction SilentlyContinue
-if (-not $existing) {
-    New-CimInstance -ClassName Win32_PageFileSetting -Property @{
-        Name        = 'C:\pagefile.sys'
-        InitialSize = 4096
-        MaximumSize = 4096
-    }
-    Write-Host "OK: pagefile.sys registered via WMI (4096MB fixed)"
-} else {
-    Write-Host "OK: pagefile.sys already registered in WMI"
+# Remove all existing pagefile registry entries and set fresh value at RAM + 257MB
+Get-CimInstance Win32_PageFileSetting -ErrorAction SilentlyContinue | ForEach-Object {
+    Write-Host "Removing old pagefile entry: $($_.Name)"
+    $_ | Remove-CimInstance -Confirm:$false
 }
+New-CimInstance -ClassName Win32_PageFileSetting -Property @{
+    Name        = 'C:\pagefile.sys'
+    InitialSize = [uint32]$pagefileSizeMB
+    MaximumSize = [uint32]$pagefileSizeMB
+} | Out-Null
+Write-Host "OK: pagefile.sys registered via WMI (${pagefileSizeMB} MB = RAM + 257MB)"
 Write-Host "OK: Pagefile pre-allocation complete — active after reboot"
 
 Write-Host "`n=== All steps complete. Rebooting in 5 seconds... ==="
