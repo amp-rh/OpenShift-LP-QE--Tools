@@ -1,63 +1,25 @@
 #!/usr/bin/env python3
 '''guest-agent.py -- drive a KubeVirt Windows guest through the qemu-guest-agent.
 
-WHY
-    A KubeVirt/OpenShift VM is not reachable over SSH without additional network
-    configuration. The guest is reachable through the qemu-guest-agent (QGA), which
-    `virsh` speaks inside the VM's virt-launcher Pod. This CLI wraps that RPC so the
-    BSOD pipeline (preflight, toolkit staging, crash trigger and watcher liveness)
-    runs without SSH or guest credentials -- guest-exec runs as
-    `nt authority\\system` (fully elevated).
-
-HOW IT REACHES THE GUEST
-    oc exec -n <namespace> <virt-launcher-pod> -- \\
-        virsh qemu-agent-command --timeout <seconds> <domain> '<qmp-json>'
-    where <domain> is "<namespace>_<vmName>" (e.g. windows-bsod_win2022).
-
 USAGE
-    guest-agent.py ping
-    guest-agent.py exec <program> [args...]
-    guest-agent.py exec-crash <program> [args...]
-    guest-agent.py put <localPath> <guestPath>
-    guest-agent.py psfile <local.ps1> [<psArgs...>]
-    guest-agent.py psfile <local.ps1> [--companion <localPath> <guestPath>]... [-- <psArgs...>]
+    guest-agent.py ping                            agent liveness check
+    guest-agent.py exec <program> [args...]        run, wait up to 600s, relay output and exit code
+    guest-agent.py exec-crash <program> [args...]  launch a crash trigger; agent loss after launch = success
+    guest-agent.py put <localPath> <guestPath>     upload a file
+    guest-agent.py psfile <local.ps1> [args...]    upload a PowerShell script and run it
+    guest-agent.py psfile <local.ps1> [--companion <localPath> <guestPath>]... [-- args...]
 
-SUBCOMMANDS
-    ping        guest-ping liveness check; prints the agent reply ({}).
-    exec        Run a program, wait up to 600s for it to exit, relay its
-                stdout/stderr and exit with the guest exit code.
-    exec-crash  Launch a crash-inducing program and confirm the outcome. Losing the
-                agent after a confirmed launch is the expected crash signal: print a
-                JSON record ("disconnected": true) and exit 0. A program that exits
-                first relays its output and exit code.
-    put         Upload a local file in 64 KiB chunks.
-    psfile      Upload a PowerShell script to C:\\Windows\\Temp\\ (plus optional
-                companion files to explicit guest paths) and run it with
-                `powershell.exe -File`, waiting up to 600s. Script arguments follow the
-                script directly; after --companion entries, `--` separates them.
+ENVIRONMENT
+    BSOD_DET__VM__NAME, BSOD_DET__NAMESPACE, BSOD_DET__DOMAIN__NAME, BSOD_DET__POD__NAME
+        guest target; unset values are derived or discovered from the cluster.
+    BSOD_TRIGGER_CONFIRM_TIMEOUT
+        exec-crash confirmation window in seconds (default 45).
 
 EXIT STATUS
-    exec, exec-crash and psfile relay the guest exit code (as its low 8 bits, so it
-    can coincide with the statuses below). Other statuses:
-    0    ping/put succeeded, or exec-crash observed the expected agent loss.
-    1    Target resolution failed, an agent call raised an error, or another unhandled
-         error occurred (e.g. missing put arguments, unreadable local file, non-integer
-         BSOD_TRIGGER_CONFIRM_TIMEOUT); unhandled errors print a traceback.
-    2    Usage error.
-    124  The guest command did not exit within its wait window.
-    125  The guest reported an exit without an exit code.
+    exec, exec-crash and psfile relay the guest exit code. Otherwise: 0 success (exec-crash:
+    the expected agent loss), 1 error, 2 usage, 124 not exited in time, 125 no exit code.
 
-CONFIG (environment; explicit values take precedence over discovery)
-    BSOD_DET__VM__NAME            VirtualMachineInstance name. When unset (and not derivable
-                                  from the domain), the only VMI in scope is used; zero or
-                                  several VMIs are an error.
-    BSOD_DET__NAMESPACE           Namespace containing the VM.
-    BSOD_DET__DOMAIN__NAME        (optional) libvirt domain name. Defaults to "<namespace>_<vmName>";
-                                  when the namespace or VM name is unset it is derived from this.
-    BSOD_DET__POD__NAME           (optional) virt-launcher Pod name. Auto-resolved when unset.
-    BSOD_TRIGGER_CONFIRM_TIMEOUT  (optional) exec-crash confirmation window in seconds (default 45).
-                                  Predates the BSOD_DET__ naming convention; renaming it needs a
-                                  caller compatibility plan.
+Details: apps/bsod-detector/src/scripts/host/README.md
 '''
 from __future__ import annotations
 
@@ -74,9 +36,8 @@ from collections.abc import Mapping
 class TargetError(Exception):
     '''The guest target cannot be identified unambiguously.
 
-    Deliberately not a RuntimeError: the exec polling loops treat RuntimeError as a
-    transient (or, for exec-crash, crash-signalling) agent failure, and a
-    configuration error must never be mistaken for either.
+    Not a RuntimeError on purpose: exec polling treats RuntimeError as a transient (exec) or
+    crash-signalling (exec-crash) agent failure, which a configuration error must never be.
     '''
 
 
@@ -90,11 +51,7 @@ class GuestTarget(typing.NamedTuple):
 
 
 def RunOC(args: list[str]) -> str:
-    '''Run a bounded `oc` read and return its stripped stdout, or '' on any failure.
-
-    Failures (missing client, timeout or nonzero exit) are folded into '' so that
-    discovery reports one actionable target error instead of a client traceback.
-    '''
+    '''Run a bounded `oc` read; return its stripped stdout, or '' on any failure (missing client, timeout, error).'''
     try:
         completed = subprocess.run(
             ['oc', '--request-timeout=20s'] + args,
@@ -122,11 +79,7 @@ def Log(message: str) -> None:
 
 
 def ExitedResult(pid: int, status: dict[str, typing.Any]) -> dict[str, typing.Any]:
-    '''Convert an exited guest-exec-status reply into a result record with decoded output.
-
-    The QGA reply carries base64 `out-data`/`err-data`; undecodable bytes are replaced
-    rather than raised so that a crash tool's partial output is still reported.
-    '''
+    '''Convert an exited guest-exec-status reply into {pid, exitcode, stdout, stderr}; undecodable bytes are replaced.'''
     return {
         'pid':      pid,
         'exitcode': status.get('exitcode'),
@@ -136,13 +89,10 @@ def ExitedResult(pid: int, status: dict[str, typing.Any]) -> dict[str, typing.An
 
 
 class GuestAgent:
-    '''qemu-guest-agent client bound to one KubeVirt guest.
+    '''qemu-guest-agent client for one guest.
 
-    The requested target is supplied per instance and resolved lazily by the first
-    agent command, so subcommands rejected for usage reasons never reach the cluster.
-    The resolved GuestTarget is cached on the instance only: separate instances never
-    share target or cache state. The requested target is fixed at construction; create
-    a new instance to address a different guest.
+    The target is resolved lazily by the first agent command and cached on this instance
+    only; create a new instance to address a different guest.
     '''
 
     def __init__(self, namespace: str = '', vmName: str = '', podName: str = '', domainName: str = '') -> None:
@@ -165,16 +115,10 @@ class GuestAgent:
         )
 
     def ResolveTarget(self) -> GuestTarget:
-        '''Return the guest target, resolving it on first use and caching it on this instance.
+        '''Return the guest target, resolving it on first use (rules: see the README).
 
-        Requested values take precedence. A "<namespace>_<vmName>" domain supplies a
-        missing namespace or VM name; a still-missing VM name is discovered only when
-        exactly one VirtualMachineInstance is in scope. The domain defaults to
-        "<namespace>_<vmName>" and the Pod to the VM's virt-launcher Pod. Only a fully
-        resolved target is cached, so a failed resolution is retried on the next call.
-
-        Raises:
-            TargetError: no unambiguous VM, namespace or virt-launcher Pod is found.
+        Only a fully resolved target is cached. Raises TargetError if no unambiguous VM,
+        namespace or virt-launcher Pod is found.
         '''
         if self.target is not None:
             return self.target
@@ -209,14 +153,11 @@ class GuestAgent:
         return self.target
 
     def SendCommand(self, qmpCommand: dict[str, typing.Any], timeout: int = 300) -> typing.Any:
-        '''Send one QMP command to the guest agent and return the reply's `return` payload.
+        '''Send one QMP command and return the reply's `return` payload.
 
-        `timeout` bounds the oc request and the virsh agent wait; the local subprocess
-        gets 5 extra seconds so that virsh reports its own timeout first.
-
-        Raises:
-            TargetError: the guest target cannot be resolved.
-            RuntimeError: the transport failed, virsh exited nonzero or the reply is invalid.
+        `timeout` bounds the oc request and the virsh wait (the subprocess gets 5s more).
+        Raises TargetError if the target cannot be resolved, and RuntimeError on any
+        transport, virsh or reply failure.
         '''
         target = self.ResolveTarget()
         payload = json.dumps(qmpCommand)
@@ -247,14 +188,10 @@ class GuestAgent:
         return self.SendCommand({'execute': 'guest-exec-status', 'arguments': {'pid': pid}}, timeout=timeout)
 
     def GuestExec(self, path: str, args: list[str] | None = None, pollTimeout: int = 600) -> dict[str, typing.Any]:
-        '''Run a guest program and wait for it to exit.
+        '''Run a guest program and wait up to `pollTimeout` seconds for it to exit.
 
-        Status polls run every 3s. Transient agent errors are retried until 10s or less of the
-        `pollTimeout` window remain, then raised as RuntimeError.
-
-        Returns:
-            ExitedResult() record, or {'pid', 'timeout': True, 'message'} when the program
-            has not exited within `pollTimeout` seconds.
+        Returns ExitedResult() or a {'pid', 'timeout': True, 'message'} record. Status-poll
+        errors are retried until 10s or less of the window remain, then raised as RuntimeError.
         '''
         pid = self.LaunchProgram(path, args, timeout=300)
         deadline = time.time() + pollTimeout
@@ -272,14 +209,8 @@ class GuestAgent:
     def GuestExecCrash(self, path: str, args: list[str] | None = None, pollTimeout: int = 45) -> dict[str, typing.Any]:
         '''Launch a crash-inducing guest program and report how it ended.
 
-        The launch must be acknowledged with a PID (20s agent timeout). After that, any
-        agent error on a 5s status poll means the guest stopped answering, which is the
-        crash signal.
-
-        Returns:
-            {'pid', 'disconnected': True, 'message'} on agent loss; ExitedResult() when the
-            program exits first; {'pid', 'timeout': True, 'message'} when it is still
-            observable after `pollTimeout` seconds.
+        After the launch is acknowledged, any agent error is the crash signal and returns
+        {'pid', 'disconnected': True, 'message'}; otherwise ExitedResult() or a timeout record.
         '''
         pid = self.LaunchProgram(path, args, timeout=20)
         deadline = time.monotonic() + pollTimeout
@@ -294,12 +225,7 @@ class GuestAgent:
         return {'pid': pid, 'timeout': True, 'message': f'crash command remained observable for {pollTimeout}s'}
 
     def GuestPut(self, localPath: str, guestPath: str) -> int:
-        '''Upload a local file to `guestPath` and return the number of bytes written.
-
-        Data is sent in 64 KiB chunks (about 85 KiB base64), which keeps each oc exec
-        argument within ARG_MAX; progress is logged every 50 MiB. The guest handle is
-        always closed, even when a write fails.
-        '''
+        '''Upload a local file to `guestPath` in 64 KiB chunks and return its size; the handle is always closed.'''
         with open(localPath, 'rb') as localFile:
             fileData = localFile.read()
         fileSize = len(fileData)
@@ -322,11 +248,7 @@ class GuestAgent:
 
 
 def PrintExecResult(result: dict[str, typing.Any]) -> int:
-    '''Relay a guest command's stdout/stderr and return the CLI exit status.
-
-    Returns the guest exit code, 124 when the command did not exit in time, or 125
-    when the guest reported no exit code.
-    '''
+    '''Relay a guest command's output; return its exit code, 124 on timeout or 125 without an exit code.'''
     for stream, streamKey in ((sys.stdout, 'stdout'), (sys.stderr, 'stderr')):
         if result.get(streamKey):
             stream.write(result[streamKey] + ('' if result[streamKey].endswith('\n') else '\n'))
@@ -341,14 +263,11 @@ def PrintExecResult(result: dict[str, typing.Any]) -> int:
 
 
 def ParsePSfileArgs(arguments: list[str]) -> tuple[list[tuple[str, str]], list[str]]:
-    '''Split psfile arguments into companion uploads and PowerShell script arguments.
+    '''Split psfile arguments into (companion uploads, script arguments).
 
-    Without a leading `--companion` or `--`, every argument belongs to the script.
-    Otherwise `--companion <localPath> <guestPath>` entries repeat until `--`, after
-    which the remaining arguments belong to the script.
-
-    Raises:
-        ValueError: a companion entry is malformed or incomplete.
+    Without a leading `--companion` or `--` every argument belongs to the script; otherwise
+    `--companion <localPath> <guestPath>` entries repeat until `--`. Raises ValueError on a
+    malformed companion entry.
     '''
     if arguments and arguments[0] not in {'--companion', '--'}:
         return [], arguments
@@ -365,11 +284,10 @@ def ParsePSfileArgs(arguments: list[str]) -> tuple[list[tuple[str, str]], list[s
 
 
 def Main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None) -> int:
-    '''Run one guest-agent.py subcommand and return its exit status (see module EXIT STATUS).
+    '''Run one subcommand and return its exit status (see EXIT STATUS above).
 
-    `argv` (default sys.argv) includes the program name; `environ` (default os.environ)
-    supplies the target and exec-crash configuration. Each call builds its own
-    GuestAgent, so no target state outlives the call.
+    `argv` (default sys.argv) includes the program name; `environ` defaults to os.environ.
+    Each call builds its own GuestAgent, so no target state outlives the call.
     '''
     cliArgs = list(sys.argv if argv is None else argv)
     environ = os.environ if environ is None else environ
