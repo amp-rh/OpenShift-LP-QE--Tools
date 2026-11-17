@@ -16,8 +16,9 @@ ENVIRONMENT
         exec-crash confirmation window in seconds (default 45).
 
 EXIT STATUS
-    exec, exec-crash and psfile relay the guest exit code. Otherwise: 0 success (exec-crash:
-    the expected agent loss), 1 error, 2 usage, 124 not exited in time, 125 no exit code.
+    exec, exec-crash and psfile exit with the low 8 bits of the guest exit code (256 becomes 0).
+    Otherwise: 0 success (exec-crash: the expected agent loss), 1 error, 2 usage,
+    124 not exited in time, 125 no exit code.
 
 Details: apps/bsod-detector/src/scripts/host/README.md
 '''
@@ -229,7 +230,7 @@ class GuestAgent:
         with open(localPath, 'rb') as localFile:
             fileData = localFile.read()
         fileSize = len(fileData)
-        chunkSize = 64 * 1024
+        chunkSize = 64 * 1024  # About 85 KiB of base64 keeps each `oc exec` argument under Linux's 128 KiB per-argument limit.
         progressStep = 50 * 1024 * 1024
         handle = self.SendCommand({'execute': 'guest-file-open', 'arguments': {'path': guestPath, 'mode': 'wb'}},
                                   timeout=300)
@@ -248,7 +249,10 @@ class GuestAgent:
 
 
 def PrintExecResult(result: dict[str, typing.Any]) -> int:
-    '''Relay a guest command's output; return its exit code, 124 on timeout or 125 without an exit code.'''
+    '''Relay a guest command's output; return its exit code, 124 on timeout or 125 without an exit code.
+
+    The process exit status keeps only the low 8 bits of the returned guest code.
+    '''
     for stream, streamKey in ((sys.stdout, 'stdout'), (sys.stderr, 'stderr')):
         if result.get(streamKey):
             stream.write(result[streamKey] + ('' if result[streamKey].endswith('\n') else '\n'))
@@ -295,9 +299,11 @@ def Main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
         print(__doc__)
         return 2
     subCmd = cliArgs[1]
-    requiredArg = {'exec': 'a program', 'exec-crash': 'a program', 'psfile': 'a local PowerShell file'}
-    if subCmd in requiredArg and len(cliArgs) < 3:
-        print(f'{subCmd} requires {requiredArg[subCmd]}', file=sys.stderr)
+    requiredArgs = {'exec': (1, 'a program'), 'exec-crash': (1, 'a program'), 'psfile': (1, 'a local PowerShell file'),
+                    'put': (2, 'a local path and a guest path')}
+    argCount, argText = requiredArgs.get(subCmd, (0, ''))
+    if len(cliArgs) < 2 + argCount:
+        print(f'{subCmd} requires {argText}', file=sys.stderr)
         return 2
     guestAgent = GuestAgent.FromEnvironment(environ)
     try:
