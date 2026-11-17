@@ -21,7 +21,7 @@ set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI="${LIBVIRT_DEFAULT_URI:-qemu:///system}"
 typeset here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-typeset repo; repo="$(cd "${here}/../../.." && pwd)"   # crash-injector -> scripts -> src -> app root
+typeset repo; repo="$(cd "${here}/../../.." && pwd)"   # bsod-pipeline -> scripts -> src -> app root
 typeset vmName="${VM_NAME:-bsod-test}"
 typeset gssh="${repo}/src/scripts/host/guest-ssh.sh"
 typeset snapshot="${SNAPSHOT:-crashme-installed}"

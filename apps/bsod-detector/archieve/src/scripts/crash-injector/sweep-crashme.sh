@@ -2,7 +2,7 @@
 set -euxo pipefail; shopt -s inherit_errexit
 
 export LIBVIRT_DEFAULT_URI=qemu:///system
-typeset repoDir=''; repoDir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"  # crash-injector -> scripts -> src -> app root
+typeset repoDir=''; repoDir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"  # bsod-pipeline -> scripts -> src -> app root
 cd "${repoDir}"
 
 typeset -a codes=(

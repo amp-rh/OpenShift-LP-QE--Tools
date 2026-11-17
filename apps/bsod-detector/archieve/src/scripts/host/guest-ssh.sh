@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # guest-ssh.sh - run PowerShell in the test guest over SSH, robustly.
 #
-# Runs on the HOST. Used for CRASH TRIGGERING ONLY (crash-injector scripts),
+# Runs on the HOST. Used for CRASH TRIGGERING ONLY (bsod-pipeline scripts),
 # NOT for evidence collection. Evidence is collected offline via guestfs after
 # the VM is stopped.
 #

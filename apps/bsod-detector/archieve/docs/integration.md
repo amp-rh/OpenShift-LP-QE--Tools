@@ -123,7 +123,7 @@ driver.
 ```bash
 # From the host, sweep all 19 defined codes:
 export LIBVIRT_DEFAULT_URI=qemu:///system
-./src/scripts/crash-injector/sweep-crashme.sh
+./src/scripts/bsod-pipeline/sweep-crashme.sh
 
 # Or drive a single code manually:
 # 1. Revert to known-good state
@@ -253,7 +253,7 @@ and system context without needing guest-side scripts, SSH, or a reboot.
 
 ### Guest prerequisites (one-time setup)
 
-These are set by `src/scripts/crash-injector/prep-guest.ps1` and baked into the `clean-baseline` snapshot:
+These are set by `src/scripts/bsod-pipeline/prep-guest.ps1` and baked into the `clean-baseline` snapshot:
 
 | Setting | Value | Why |
 |---|---|---|
@@ -282,7 +282,7 @@ These are set by `src/scripts/crash-injector/prep-guest.ps1` and baked into the 
 **Guest script deployment:** In the offline-first flow, no guest-side scripts
 need to be staged. Evidence (dumps, event logs) is extracted from the guest
 disk after the VM is stopped. Only the CrashMe driver needs to be pre-installed
-for deliberate crash testing (see `crash-injector/prep-guest.ps1`).
+for deliberate crash testing (see `bsod-pipeline/prep-guest.ps1`).
 
 ---
 
@@ -310,8 +310,8 @@ secrets, credentials, or PII.
 All 19 bug-check codes in
 [`data/trigger-methods.json`](../src/data/trigger-methods.json) have been verified
 end-to-end on Windows Server 2025 (build 26100) with Driver Verifier enabled.
-All use the KeBugCheckEx test driver (`src/scripts/crash-injector/test-driver/crashme.sys`) invoked via
-`src/scripts/crash-injector/sweep-crashme.sh`.
+All use the KeBugCheckEx test driver (`src/scripts/bsod-pipeline/test-driver/crashme.sys`) invoked via
+`src/scripts/bsod-pipeline/sweep-crashme.sh`.
 
 | Code | Name |
 |---|---|

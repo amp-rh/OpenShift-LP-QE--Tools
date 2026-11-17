@@ -42,5 +42,5 @@ and disposable.
 ## References
 
 - NotMyFault: https://learn.microsoft.com/en-us/sysinternals/downloads/notmyfault
-- CrashMe driver source: `src/scripts/crash-injector/test-driver/`
+- CrashMe driver source: `src/scripts/bsod-pipeline/test-driver/`
 - Development notes: [`development-notes.md`](development-notes.md) §"Why a custom kernel driver"
