@@ -117,11 +117,11 @@ typeset metadataFile="${outDir}/recovery-metadata.json" readyFile="${outDir}/wat
 typeset -a commonArgs=(
     --ns "${ns}" --vm "${vm}" --out "${outDir}" --metadata "${metadataFile}" --run-id "${runId}"
     --evidence-mount "${evidenceRoot}" --evidence-volume-kind "${evidenceKind}" --evidence-storage-id "${evidenceId}"
-    --snap-class "${snapClass}" --recovery-image "${recoveryImage}" --memory-dump-pvc "${memoryPvc}"
+    --snap-class "${snapClass}" --memory-dump-pvc "${memoryPvc}"
 )
 mkdir "${outDir}" || Die "cannot create unique run directory ${outDir}"
 
-# Same preflight for both modes. No `--require-trigger`: it checks for NotMyFault, which intentional mode stages below.
+# Same preflight for both modes. --recovery-image not passed — preflight doesn't use it.
 RunTimed "${preflightTimeout}" "${hostDir}/preflight-rhov.sh" "${commonArgs[@]}"
 typeset pod='' dom=''
 pod="$(jq -er .launcherPod "${metadataFile}")"
@@ -133,7 +133,7 @@ export BSOD_DET__POD__NAME="${pod}" BSOD_DET__DOMAIN__NAME="${dom}"
 # shellcheck disable=SC2016 # Expanded by the launcher Pod shell.
 RunTimed 30 oc --request-timeout=25s -n "${ns}" exec "${pod}" -- bash -o pipefail -xc '
     es=0
-    virsh qemu-monitor-command "${1}" --hmp "device_add pvpanic,id=pvpanic0" || es=1
+    virsh qemu-monitor-command "${1}" --hmp "device_add pvpanic-pci,id=pvpanic0" || es=1
     { virsh dumpxml "${1}" | sed "s|<on_crash>.*</on_crash>|<on_crash>preserve</on_crash>|" 1> /tmp/dom-patch.xml &&
         virsh define /tmp/dom-patch.xml 1> /dev/null; } || es=1
     rm -f /tmp/dom-patch.xml
@@ -141,8 +141,8 @@ RunTimed 30 oc --request-timeout=25s -n "${ns}" exec "${pod}" -- bash -o pipefai
 ' '' "${dom}" || : 'WARN: domain crash-behaviour patch failed (non-fatal, evidence capture may be limited)'
 
 # Pre-crash fallback copies; the VMI spec stays readable even if the launcher Pod fails after the BSOD.
-RunTimed 30 oc --request-timeout=25s -n "${ns}" exec "${pod}" -- virsh dumpxml "${dom}" 1> "${outDir}/domain.xml" ||
-    rm -f "${outDir}/domain.xml"
+RunTimed 30 oc --request-timeout=25s -n "${ns}" exec "${pod}" -- virsh dumpxml "${dom}" 1> "${outDir}/pre-bsod-domain.xml" ||
+    rm -f "${outDir}/pre-bsod-domain.xml"
 RunTimed 15 oc --request-timeout=10s -n "${ns}" get "vmi/${vm}" -o json 1> "${outDir}/vmi-spec.json" ||
     rm -f "${outDir}/vmi-spec.json"
 
@@ -158,7 +158,7 @@ if [ "${mode}" = intentional ]; then
         Die "guest dump cleanup could not be proven: ${cleanState}"
 fi
 
-typeset -a watchArgs=("${commonArgs[@]}" --ready-file "${readyFile}" --no-restart)
+typeset -a watchArgs=("${commonArgs[@]}" --recovery-image "${recoveryImage}" --ready-file "${readyFile}" --no-restart)
 [ "${mode}" = watch ] || watchArgs+=(--intentional)
 bash "${hostDir}/bsod-watcher.sh" "${watchArgs[@]}" &
 watcherPid=$!
