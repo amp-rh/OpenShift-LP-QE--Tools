@@ -158,6 +158,19 @@ if [ "${mode}" = intentional ]; then
         Die "guest dump cleanup could not be proven: ${cleanState}"
 fi
 
+if [ "${mode}" = watch ]; then
+    if [ -t 0 ]; then
+        # Interactive — prompt user
+        typeset armedInput=''
+        read -rp "Watch timeout in seconds (press Enter for default 3600s = 1 hour): " armedInput
+        export BSOD_DET__ARMED__TIMEOUT="${armedInput:-3600}"
+        echo "bsod-runner: watcher armed timeout = ${BSOD_DET__ARMED__TIMEOUT}s"
+    else
+        # Non-interactive (CI) — require explicit timeout
+        [ -n "${BSOD_DET__ARMED__TIMEOUT:-}" ] || Die 'watch mode in CI requires BSOD_DET__ARMED__TIMEOUT to be set explicitly (e.g. export BSOD_DET__ARMED__TIMEOUT=3600)'
+        echo "bsod-runner: watcher armed timeout = ${BSOD_DET__ARMED__TIMEOUT}s"
+    fi
+fi
 typeset -a watchArgs=("${commonArgs[@]}" --recovery-image "${recoveryImage}" --ready-file "${readyFile}" --no-restart)
 [ "${mode}" = watch ] || watchArgs+=(--intentional)
 bash "${hostDir}/bsod-watcher.sh" "${watchArgs[@]}" &
