@@ -10,7 +10,7 @@ typeset evidenceRoot="${BSOD_DET__EVIDENCE__MOUNT:-}"; typeset evidenceKind="${B
 typeset evidenceId="${BSOD_DET__EVIDENCE__STORAGE_ID:-}"; typeset readyFile=''
 typeset commandTimeout="${BSOD_DET__COMMAND__TIMEOUT:-30}"; typeset preflightTimeout="${BSOD_DET__PREFLIGHT__TIMEOUT:-300}"
 typeset captureTimeout="${BSOD_DET__CAPTURE__TIMEOUT:-300}"; typeset memoryTimeout="${BSOD_MEMORY_CAPTURE_TIMEOUT:-1800}"
-typeset armedTimeout="${BSOD_DET__ARMED__TIMEOUT:-3600}"
+typeset armedTimeout="${BSOD_DET__ARMED__TIMEOUT:?'BSOD_DET__ARMED__TIMEOUT must be set by bsod-runner.sh'}"
 typeset runDir=''; typeset pvpanicFile=''; typeset pvpanicPid=''; typeset progressPid=''; typeset memoryAssociated=0
 typeset stageErrors=''; typeset pipelineLog=''; typeset summaryMode='natural-rhov'
 typeset -a guestAgent=(python3 "${scriptDir}/guest-agent.py")
