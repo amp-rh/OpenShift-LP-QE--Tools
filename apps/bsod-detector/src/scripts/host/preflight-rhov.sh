@@ -63,7 +63,6 @@ while (($#)); do
       (--evidence-volume-kind) evidenceKind="${2:?}"; shift 2;;
       (--evidence-storage-id) evidenceId="${2:?}"; shift 2;;
       (--snap-class) snapClass="${2:?}"; shift 2;;
-      (--recovery-image) shift 2;;  # accepted but not used — guestfs image selected independently
       (--memory-dump-pvc) memoryPvc="${2:?}"; shift 2;;
       (--disk-target) diskTarget="${2:?}"; shift 2;;
       (--require-trigger) requireTrigger=1; shift;;
@@ -118,12 +117,12 @@ for tool in oc virtctl jq python3 sha256sum findmnt timeout realpath sync; do
     }
 done
 typeset helper=''
-for helper in guest-agent.py reliability.py extract--guest-os--crash-info.sh collect-host-signals.sh; do
-    [ -r "${scrDir}/${helper}" ] || {
-        : "required helper missing: ${scrDir}/${helper}"
+while IFS= read -r helper; do
+    [ -r "${helper}" ] || {
+        : "required helper missing: ${helper}"
         false
     }
-done
+done < <(find "${scrDir}" -maxdepth 1 -type f ! -name '*.bak' \( -name '*.sh' -o -name '*.py' \) 2>/dev/null)
 { [ -r "${configureScript}" ] && [ -r "${crashControlFile}" ]; } || {
     : 'guest configuration inputs are missing'
     false
@@ -412,37 +411,8 @@ done
 
 export BSOD_DET__NAMESPACE="${ns}" BSOD_DET__VM__NAME="${vm}" BSOD_DET__POD__NAME="${pod}" BSOD_DET__DOMAIN__NAME="${dom}"
 
-# Bootstrap QGA if the service is installed but not responding.
-# Uploads and installs qemu-ga-x86_64.msi via virsh qemu-agent-command (no SSH required).
-# Only works if QGA binary is present in the VM — cannot install from scratch without it.
-function BootstrapQGA () {
-    typeset msiUrl="${BSOD_DET__QEMU_GA_MSI_URL:-https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/qemu-ga-x86_64.msi}"
-    typeset msiLocal=''
-    msiLocal="$(mktemp /tmp/qemu-ga-bootstrap-XXXXXX.msi)"
-    : 'QGA not responding — attempting qemu-ga bootstrap via guest-agent.py'
-    if ! RunTimed 120 curl -fsSL -o "${msiLocal}" "${msiUrl}"; then
-        : "WARN: qemu-ga MSI download failed from ${msiUrl}"
-        rm -f "${msiLocal}"
-        return 1
-    fi
-    : "qemu-ga MSI downloaded ($(du -h "${msiLocal}" | cut -f1))"
-    if ! RunTimed 180 "${guestAgent[@]}" put "${msiLocal}" 'C:\Temp\qemu-ga-x86_64.msi' 2> /dev/null; then
-        : 'WARN: guest-agent.py put failed — QGA service may not be present in the VM'
-        rm -f "${msiLocal}"
-        return 1
-    fi
-    rm -f "${msiLocal}"
-    : 'qemu-ga MSI uploaded to VM via guest-agent.py'
-    if ! RunTimed 120 "${guestAgent[@]}" exec \
-        'C:\Windows\System32\msiexec.exe' '/i' 'C:\Temp\qemu-ga-x86_64.msi' '/quiet' '/norestart' 2> /dev/null; then
-        : 'WARN: qemu-ga MSI install failed'
-        return 1
-    fi
-    : 'QEMU guest agent installed — waiting 15s for service to start'
-    sleep 15
-    true
-}
-
+# QGA is installed and verified in the golden image (golden-image-pre-reboot.ps1).
+# BootstrapQGA removed — it was self-defeating (required QGA to install QGA) and redundant.
 typeset pingOk=0 i=''
 for i in $(seq 1 5); do
     if RunTimed 15 "${guestAgent[@]}" ping 1> /dev/null 2>&1; then
@@ -452,22 +422,8 @@ for i in $(seq 1 5); do
     : "qemu guest agent ping attempt ${i} failed; retrying..."
     sleep 3
 done
-
-if ((pingOk == 0)); then
-    : 'QGA unreachable after 5 attempts — attempting automatic QGA bootstrap'
-    if BootstrapQGA; then
-        for i in $(seq 1 5); do
-            if RunTimed 15 "${guestAgent[@]}" ping 1> /dev/null 2>&1; then
-                pingOk=1
-                break
-            fi
-            : "post-bootstrap QGA ping attempt ${i} failed; retrying..."
-            sleep 5
-        done
-    fi
-fi
 [ "${pingOk}" = 1 ] || {
-    : 'qemu guest agent ping failed after 5 retries (bootstrap attempted)'
+    : 'qemu guest agent ping failed after 5 retries'
     false
 }
 
@@ -490,12 +446,14 @@ jq -e '.rebootRequired == false' <<<"${cfg}" 1> /dev/null || {
 }
 
 typeset guestChecks=''
-guestChecks="$(RunTimed 60 "${guestAgent[@]}" exec powershell.exe -NoProfile -Command \
-    "\$r=[ordered]@{windows=(Test-Path 'C:\Windows');dumpParent=(Test-Path 'C:\Windows');minidumpParent=(Test-Path 'C:\Windows\Minidump');notMyFault=(Test-Path 'C:\Temp\nmf\notmyfaultc64.exe')}; \$r|ConvertTo-Json -Compress")" || {
+typeset guestCheckScript="\$r=[ordered]@{windows=(Test-Path 'C:\Windows');dumpParent=(Test-Path 'C:\Windows')"
+((requireTrigger)) && guestCheckScript+=";notMyFault=(Test-Path 'C:\Temp\nmf\notmyfaultc64.exe')"
+guestCheckScript+="}; \$r|ConvertTo-Json -Compress"
+guestChecks="$(RunTimed 60 "${guestAgent[@]}" exec powershell.exe -NoProfile -Command "${guestCheckScript}")" || {
     : 'guest diagnostic path verification failed'
     false
 }
-jq -e '.windows == true and .dumpParent == true and .minidumpParent == true' <<<"${guestChecks}" 1> /dev/null || {
+jq -e '.windows == true and .dumpParent == true' <<<"${guestChecks}" 1> /dev/null || {
     : 'required guest dump paths are missing'
     false
 }
