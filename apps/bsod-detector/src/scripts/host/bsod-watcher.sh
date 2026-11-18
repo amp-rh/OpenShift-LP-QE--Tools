@@ -318,7 +318,8 @@ function CrashResponse () {
     fi
     sleep 3
   done
-  { StopVM && Recover ; } || Fatal
+  StopVM || { WriteSummary || true; return 1; }
+  Recover || { WriteSummary || true; return 1; }
   WriteSummary
 }
 Log "preflight passed; preparing watcher for ${ns}/${vm} (run=${runId}, disk=${diskTarget})"
