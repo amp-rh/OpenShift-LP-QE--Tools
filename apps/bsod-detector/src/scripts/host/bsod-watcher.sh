@@ -178,24 +178,18 @@ EOF
     oc --request-timeout=30s delete virtualmachineexport "${exportName}" -n "${ns}" --ignore-not-found >>"${pipelineLog}" 2>&1 || true
     return 1
   fi
-  Log "downloading memory dump via virtctl vmexport (progress-monitored, no hard timeout)..."
+  Log "downloading memory dump via virtctl vmexport (unlimited, no hard timeout)..."
   virtctl vmexport download "${exportName}" -n "${ns}" --output "${temporary}" --format gzip \
-    --port-forward --insecure --keep-vme >>"${pipelineLog}" 2>&1 &
+    --insecure --keep-vme >>"${pipelineLog}" 2>&1 &
   typeset downloadPid=$!
-  typeset lastSize=0 currentSize=0 downloadStatus=0 stallCount=0 stallThreshold=10  # 10 * 30s = 5 min stall limit
   while kill -0 "${downloadPid}" 2>/dev/null; do
     sleep 30
-    currentSize=0; [[ -f "${temporary}" ]] && currentSize=$(stat -c%s "${temporary}" 2>/dev/null || echo 0)
-    if ((currentSize > lastSize)); then
-      Log "download progress: $(numfmt --to=iec-i --suffix=B "${currentSize}" 2>/dev/null || echo "${currentSize} bytes")"
-      lastSize=${currentSize}; stallCount=0
-    elif ((++stallCount > stallThreshold)); then
-      Log "WARN: download stalled (no writes for 5 min) — terminating"
-      kill -TERM "${downloadPid}" 2>/dev/null || true; break
-    fi
+    [[ -f "${temporary}" ]] && Log "download progress: $(numfmt --to=iec-i --suffix=B "$(stat -c%s "${temporary}" 2>/dev/null || echo 0)" 2>/dev/null)"
   done
+  typeset downloadStatus=0
   wait "${downloadPid}" 2>/dev/null || downloadStatus=$?
   oc --request-timeout=30s delete virtualmachineexport "${exportName}" -n "${ns}" --ignore-not-found >>"${pipelineLog}" 2>&1 || true
+  oc --request-timeout=30s delete pod -n "${ns}" --field-selector metadata.name~=virt-export- --ignore-not-found >>"${pipelineLog}" 2>&1 || true
   ((downloadStatus == 0)) || { RecordError memory "virtctl vmexport download failed"; return 1; }
   if ! RunTimed 60 python3 "${scriptDir}/reliability.py" validate-artifact --type memory --path "${temporary}" >/dev/null; then
     rm -f "${temporary}"; RecordError memory 'downloaded memory dump is not a structurally valid ELF file'; return 1
@@ -320,6 +314,8 @@ function CrashResponse () {
   done
   StopVM || { WriteSummary || true; return 1; }
   Recover || { WriteSummary || true; return 1; }
+  Log "waiting for recovery artifacts to stabilize..."
+  sleep 10
   WriteSummary
 }
 Log "preflight passed; preparing watcher for ${ns}/${vm} (run=${runId}, disk=${diskTarget})"
