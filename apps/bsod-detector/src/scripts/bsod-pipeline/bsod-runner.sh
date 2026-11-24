@@ -117,11 +117,11 @@ typeset metadataFile="${outDir}/recovery-metadata.json" readyFile="${outDir}/wat
 typeset -a commonArgs=(
     --ns "${ns}" --vm "${vm}" --out "${outDir}" --metadata "${metadataFile}" --run-id "${runId}"
     --evidence-mount "${evidenceRoot}" --evidence-volume-kind "${evidenceKind}" --evidence-storage-id "${evidenceId}"
-    --snap-class "${snapClass}" --memory-dump-pvc "${memoryPvc}"
+    --snap-class "${snapClass}" --recovery-image "${recoveryImage}" --memory-dump-pvc "${memoryPvc}"
 )
 mkdir "${outDir}" || Die "cannot create unique run directory ${outDir}"
 
-# Same preflight for both modes. --recovery-image not passed — preflight doesn't use it.
+# Same preflight for both modes.
 RunTimed "${preflightTimeout}" "${hostDir}/preflight-rhov.sh" "${commonArgs[@]}"
 typeset pod='' dom=''
 pod="$(jq -er .launcherPod "${metadataFile}")"
