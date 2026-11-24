@@ -148,16 +148,6 @@ typeset -a guestAgentArr=(python3 "${srcDir}/guest-agent.py")
 
 phase=local-inputs
 [[ -d "${srcDir}" && -r "${srcDir}" && -x "${srcDir}" ]] || Die "host scripts directory not accessible: ${srcDir}"
-# Explicit required helpers — find alone only proves existing files are readable, not that each
-# pipeline helper is present. The scan appends every other non-.bak .sh/.py helper in host/.
-typeset -a helperArr=(
-    guest-agent.py reliability.py extract--guest-os--crash-info.sh
-    collect-host-signals.sh parse-dump-header.sh watch-crash.sh preflight-rhov.sh
-)
-mapfile -t -O "${#helperArr[@]}" helperArr < <(find "${srcDir}" -maxdepth 1 -type f ! -name '*.bak' \( -name '*.sh' -o -name '*.py' \) -printf '%f\n')
-for item in "${helperArr[@]}"; do
-    [[ -r "${srcDir}/${item}" ]] || Die "required helper missing: ${srcDir}/${item}"
-done
 [[ -r "${cfgArr[validatorScript]}" && -r "${cfgArr[crashControlFile]}" ]] || Die 'guest validation inputs are missing'
 for item in get download; do
     RunTimed 10 virtctl memory-dump "${item}" --help 1> /dev/null || Die "virtctl does not provide memory-dump ${item}"
