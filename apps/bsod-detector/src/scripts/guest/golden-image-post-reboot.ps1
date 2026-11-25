@@ -1,6 +1,30 @@
 # Golden-image setup, part 2 of 2. Run as Administrator AFTER the reboot triggered by
 # golden-image-pre-reboot.ps1 and BEFORE sealing. Any FAIL exits 1 (do not seal);
-# WARN lines are informational.
+# WARN lines are informational. golden-image-pre-reboot.ps1 removes its virtio-win ISO before the
+# reboot, so nothing of it is checked or cleaned up here.
+
+# Fixed pagefile size in MB: physical RAM plus 257 MB, rounded once to a whole MB. This must
+# match the size golden-image-pre-reboot.ps1 configures, so the check below can pass exactly.
+function Get-PagefileSizeMB ([int64]$memoryBytes) {
+    [int64][math]::Round(($memoryBytes + 257MB) / 1MB, 0)
+}
+
+# Removes the exact dedicated dump file an older preparation created, only when CrashControl names
+# no dedicated dump file and the path is a plain file (not a directory, link or other reparse
+# point). Returns 'absent', 'removed', or why the file is still there.
+function Remove-LegacyDedicatedDump ([string]$path, [string]$configuredTarget) {
+    if (-not (Test-Path -LiteralPath $path)) { return 'absent' }
+    if ($configuredTarget) { return "CrashControl still names DedicatedDumpFile '${configuredTarget}'" }
+    $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    if (-not $item -or $item.PSIsContainer -or "$($item.Attributes)" -like '*ReparsePoint*') { return 'it is not a plain file' }
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $path) { return 'it could not be removed (it may stay locked until the next reboot)' }
+    'removed'
+}
+
+# FAIL lines use Write-Error. Keep the default preference so a caller's Stop preference cannot end
+# the script at the first FAIL and skip the remaining checks.
+$ErrorActionPreference = 'Continue'
 $hasFailure = $false
 
 # Also (re)sets the startup type to Automatic.
@@ -10,7 +34,7 @@ Set-Service qemu-ga -StartupType Automatic -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq 'Running') {
     Write-Host 'OK: QEMU-GA = Running, StartupType = Automatic'
 } else {
-    Write-Error "FAIL: QEMU-GA not running (status: $($svc.Status))"
+    Write-Error "FAIL: QEMU-GA not running (status: $(if ($svc) { $svc.Status } else { 'not installed' }))"
     $hasFailure = $true
 }
 
@@ -33,30 +57,13 @@ if (Test-Path 'C:\Windows\System32\drivers\storahci.sys') {
     Write-Host 'WARN: storahci.sys not found - unexpected (inbox driver should always be present)'
 }
 
-# pvpanic check not needed — pipeline uses KubeVirt Panicked event for crash detection,
-# not the Windows pvpanic driver. Device is added at runtime by preflight-rhov.sh via QMP.
-# Write-Host "`n--- Checking pvpanic driver ---"
-# $pvpanicStart = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\pvpanic' -Name Start -ErrorAction SilentlyContinue).Start
-# if ("$pvpanicStart" -eq '3') {
-#     Write-Host 'OK: pvpanic service key present (Start=3) - driver will load when QEMU presents the device'
-# } else {
-#     Write-Host "WARN: pvpanic service key missing or incorrect (Start='$pvpanicStart') - pipeline adds device via QMP at runtime (non-fatal)"
-# }
-
-# Disabled together with the recovery step in golden-image-pre-reboot.ps1.
-#Write-Host "`n--- Checking recovery settings ---"
-#$bootStatus  = bcdedit /enum '{default}' | Select-String "bootstatuspolicy"
-#$recoveryEna = bcdedit /enum '{default}' | Select-String "recoveryenabled"
-#if ($bootStatus -match "IgnoreAllFailures") {
-#    Write-Host "OK: bootstatuspolicy = IgnoreAllFailures"
-#} else {
-#    Write-Error "FAIL: bootstatuspolicy not set to IgnoreAllFailures"; $hasFailure = $true
-#}
-#if ($recoveryEna -match "No") {
-#    Write-Host "OK: recoveryenabled = No"
-#} else {
-#    Write-Error "FAIL: recoveryenabled not set to No"; $hasFailure = $true
-#}
+# pvpanic: this script does not check a guest pvpanic driver (golden-image-pre-reboot.ps1 does
+# not install one). The pipeline entry script attempts, best effort and non-fatal, to hot-add the
+# pvpanic device to the running VM through the QEMU monitor
+# (`virsh qemu-monitor-command --hmp 'device_add pvpanic,id=pvpanic0'`):
+# src/scripts/crash-injector/trigger-bsod-intentional.sh (a separately proposed pipeline runner may
+# take over that step). Whether the KubeVirt Panicked event is raised without a guest driver has
+# not been verified.
 
 # The DWORD values golden-image-pre-reboot.ps1 writes; DedicatedDumpFile must be absent.
 Write-Host "`n--- Checking crash dump registry ---"
@@ -70,35 +77,62 @@ $expected = [ordered]@{
 }
 foreach ($name in $expected.Keys) {
     $actual = (Get-ItemProperty -Path $cc -Name $name -ErrorAction SilentlyContinue).$name
-    if ("$actual" -eq "$($expected[$name])") {
-        Write-Host "OK: $name = $actual"
+    if ("${actual}" -eq "$($expected[$name])") {
+        Write-Host "OK: ${name} = ${actual}"
     } else {
-        Write-Error "FAIL: $name = '$actual' (expected '$($expected[$name])')"
+        Write-Error "FAIL: ${name} = '${actual}' (expected '$($expected[$name])')"
         $hasFailure = $true
     }
 }
 $dedicatedDump = (Get-ItemProperty -Path $cc -Name DedicatedDumpFile -ErrorAction SilentlyContinue).DedicatedDumpFile
 if ($dedicatedDump) {
-    Write-Error "FAIL: DedicatedDumpFile = '$dedicatedDump' (must be absent - forces StorPort miniport, fails on VirtIO)"
+    Write-Error "FAIL: DedicatedDumpFile = '${dedicatedDump}' (must be absent - forces StorPort miniport, fails on VirtIO)"
     $hasFailure = $true
 } else {
     Write-Host 'OK: DedicatedDumpFile = (not set) - pagefile.sys used via normal I/O'
 }
+# A dedicated dump file left at this fixed path by an older preparation is unused but would be
+# sealed into the image. Only that exact file is removed (see Remove-LegacyDedicatedDump); if it is
+# still there (DedicatedDumpFile is set, it is not a plain file, or it is still locked), do not seal.
+$legacyDumpPath = 'C:\DedicatedDump.sys'
+$legacyDumpResult = Remove-LegacyDedicatedDump $legacyDumpPath $dedicatedDump
+if ($legacyDumpResult -eq 'removed') {
+    Write-Host "OK: removed ${legacyDumpPath} from an older preparation"
+} elseif ($legacyDumpResult -ne 'absent') {
+    Write-Error "FAIL: ${legacyDumpPath} from an older preparation is still present: ${legacyDumpResult}"
+    $hasFailure = $true
+}
 
+# Both pagefile checks need the memory size: a failed query or a missing or non-positive
+# size fails verification instead of being read as 'automatic management off' or as a
+# 257 MB minimum.
 Write-Host "`n--- Checking pagefile management ---"
-$computer = Get-CimInstance -ClassName Win32_ComputerSystem
-if (-not $computer.AutomaticManagedPagefile) {
+$computer = $null
+try {
+    $computer = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+} catch {
+    Write-Error "FAIL: Win32_ComputerSystem query failed: $($_.Exception.Message)"
+}
+$hasMemorySize = $computer -and $computer.TotalPhysicalMemory -gt 0
+if (-not $hasMemorySize) {
+    Write-Error "FAIL: physical memory size is missing or not positive (TotalPhysicalMemory = '$($computer.TotalPhysicalMemory)')"
+    $hasFailure = $true
+} elseif (-not $computer.AutomaticManagedPagefile) {
     Write-Host 'OK: AutomaticManagedPagefile = false'
 } else {
     Write-Error 'FAIL: AutomaticManagedPagefile is still true'
     $hasFailure = $true
 }
 
-# Must be active in the running kernel with at least the RAM + 257 MB set before the reboot.
+# Must be active in the running kernel with at least the size (RAM + 257 MB) that
+# golden-image-pre-reboot.ps1 set before the reboot.
 Write-Host "`n--- Checking pagefile.sys ---"
 $pf = Get-CimInstance Win32_PageFileUsage | Where-Object { $_.Name -like 'C:\*' }
-$expectedMinMB = [math]::Round($computer.TotalPhysicalMemory / 1MB, 0) + 257
-if ($pf -and $pf.AllocatedBaseSize -ge $expectedMinMB) {
+$expectedMinMB = Get-PagefileSizeMB $computer.TotalPhysicalMemory
+if (-not $hasMemorySize) {
+    Write-Error 'FAIL: pagefile.sys size not verified - the physical memory size is unknown'
+    $hasFailure = $true
+} elseif ($pf -and $pf.AllocatedBaseSize -ge $expectedMinMB) {
     Write-Host "OK: pagefile.sys active - AllocatedBaseSize=$($pf.AllocatedBaseSize) MB (>= RAM+257MB=${expectedMinMB} MB), CurrentUsage=$($pf.CurrentUsage) MB"
 } elseif ($pf -and $pf.AllocatedBaseSize -gt 0) {
     Write-Error "FAIL: pagefile.sys active but too small - AllocatedBaseSize=$($pf.AllocatedBaseSize) MB (expected >= ${expectedMinMB} MB = RAM+257MB)"
@@ -110,8 +144,9 @@ if ($pf -and $pf.AllocatedBaseSize -ge $expectedMinMB) {
 
 Write-Host ''
 if ($hasFailure) {
-    Write-Error '=== One or more checks FAILED - DO NOT SEAL. Fix issues and re-run Script 1. ==='
+    Write-Error '=== One or more checks FAILED - DO NOT SEAL. Fix the issues (re-run golden-image-pre-reboot.ps1 if needed), then re-run this script. ==='
     exit 1
 }
+
 Write-Host '=== All checks passed - safe to seal the golden image. ===' -ForegroundColor Green
-Write-Host '=== Seal the image with: sysprep /generalize /oobe /shutdown /quiet ===' -ForegroundColor Green
+Write-Host '=== Seal the image with: C:\Windows\System32\Sysprep\sysprep.exe /generalize /oobe /shutdown /quiet ===' -ForegroundColor Green
