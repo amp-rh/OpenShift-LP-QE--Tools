@@ -521,27 +521,70 @@ function WaitForDumpMonitor () {
 }
 
 # ==== Phase: respond (event logs, stop and recovery) ====
-function EvtxSize () {
-    typeset logName="${1:?}"
-    oc --request-timeout=30s exec -n "${cfgArr[ns]}" "${metaArr[launcherPod]}" -- powershell.exe -NoProfile -Command \
-        "(Get-Item 'C:\Windows\System32\winevt\Logs\\${logName}.evtx' -ErrorAction SilentlyContinue).Length" 2>/dev/null || echo 0
+# shellcheck disable=SC2034 # resultRef is a nameref to the caller's variable.
+function EvtxSizes () {
+    # EvtxSizes SECONDS KILL_GRACE RESULT_VAR: one probe reads the System.evtx and Application.evtx lengths; timeout(1) sends TERM
+    # after SECONDS and KILL after KILL_GRACE more. Valid only when the probe succeeds and prints exactly two positive integers:
+    # then RESULT_VAR is `SYSTEM_BYTES APPLICATION_BYTES`; otherwise returns 1 with the reason in RESULT_VAR. Transport, as before:
+    # oc exec of powershell.exe in the virt-launcher pod (where this script also runs virsh), not in the Windows guest.
+    typeset -i seconds="${1:?}"; (($#)) && shift
+    typeset -i killGrace="${1:?}"; (($#)) && shift
+    typeset -n resultRef="${1:?}"; (($#)) && shift
+    typeset logDir='C:\Windows\System32\winevt\Logs' psCommand='' output=''
+    typeset -i probeStatus=0
+    resultRef='no time left for a bounded probe'
+    ((seconds > 0 && killGrace > 0)) || return 1
+    psCommand="'{0} {1}' -f (Get-Item -LiteralPath '${logDir}\System.evtx' -ErrorAction Stop).Length,"
+    psCommand+=" (Get-Item -LiteralPath '${logDir}\Application.evtx' -ErrorAction Stop).Length"
+    output="$(timeout --signal=TERM --kill-after="${killGrace}" "${seconds}" oc --request-timeout="${seconds}s" exec -n "${cfgArr[ns]}" \
+        "${metaArr[launcherPod]}" -- powershell.exe -NoProfile -Command "${psCommand}" 2>>"${pipelineLog}")" ||
+        { probeStatus=$?; resultRef="size probe failed or timed out (exit ${probeStatus})"; return 1; }
+    resultRef='size probe did not print two positive integer lengths'
+    [[ "${output}" =~ ^[[:space:]]*([1-9][0-9]*)[[:space:]]+([1-9][0-9]*)[[:space:]]*$ ]] || return 1
+    resultRef="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+    return 0
 }
 function WaitForEventLogs () {
-    typeset systemSize='' appSize=''
-    typeset systemSize2='' appSize2=''
-    typeset -i stableCount=0 deadline=0
-    Log 'waiting for Windows event logs to flush and stabilize...'
-    deadline=$((SECONDS + 600))
-    while ((SECONDS < deadline)); do
-        systemSize="$(EvtxSize System)"; appSize="$(EvtxSize Application)"
-        if [[ "${systemSize}" != 0 && "${appSize}" != 0 ]]; then
-            sleep 5
-            systemSize2="$(EvtxSize System)"; appSize2="$(EvtxSize Application)"
-            if [[ "${systemSize}" != "${systemSize2}" || "${appSize}" != "${appSize2}" ]]; then stableCount=0
-            elif ((++stableCount >= 2)); then Log "event logs stable (System: ${systemSize} bytes, Application: ${appSize} bytes)"; break; fi
+    # Best effort; always returns 0, so the response continues with StopVMAndRecover. Within a 600s budget, samples both event log
+    # sizes (EvtxSizes) nominally every 5s until they stay unchanged for a quiet window of over 10s: a valid sample equal to the
+    # baseline whose probe starts more than 10 whole SECONDS after the probe that set the baseline ended (so over 10s of real time;
+    # probe time never counts as quiet time). Each changed sample becomes the new baseline; a failed or invalid sample discards it
+    # (consecutive identical failures are logged once). Every probe, including its kill grace, and every pause is clamped to the
+    # time left. Unchanged sizes are only a heuristic: they do not prove that Windows has flushed the logs.
+    typeset -i budget=600 quietWindow=10 pollInterval=5 probeCap=30 killGrace=5
+    typeset -i deadline=$((SECONDS + budget)) left=0 probeSeconds=0 probeStart=0 baselineAt=0 pause=0 validCount=0 invalidCount=0
+    typeset sample='' baseline='' lastFailure=''
+    Log "waiting up to ${budget}s for the Windows event log sizes to stay unchanged for over ${quietWindow}s (best effort)..."
+    while true; do
+        left=$((deadline - SECONDS)); ((left > killGrace)) || break
+        probeSeconds=$((left - killGrace)); ((probeSeconds <= probeCap)) || probeSeconds=${probeCap}
+        probeStart=${SECONDS}
+        if EvtxSizes "${probeSeconds}" "${killGrace}" sample; then
+            validCount=$((validCount + 1)); lastFailure=''
+            if [[ "${sample}" != "${baseline}" ]]; then
+                Log "event logs: ${baseline:+sizes changed; }new baseline System ${sample% *} bytes, Application ${sample#* } bytes"
+                baseline="${sample}"; baselineAt=${SECONDS}
+            elif ((probeStart - baselineAt > quietWindow)); then
+                Log "event log sizes unchanged for over ${quietWindow}s (System: ${sample% *} bytes, Application: ${sample#* } bytes)" \
+                    '— not proof that the logs were flushed'
+                return 0
+            fi
+        else
+            invalidCount=$((invalidCount + 1)); baseline=''
+            [[ "${sample}" == "${lastFailure}" ]] || Log "event logs: invalid sample — ${sample}"
+            lastFailure="${sample}"
         fi
-        sleep 3
+        pause=$((probeStart + pollInterval - SECONDS)); left=$((deadline - SECONDS))
+        ((pause <= left)) || pause=${left}
+        ((pause <= 0)) || sleep "${pause}"
     done
+    if ((validCount == 0)); then
+        Log "WARN: no valid event log size sample within ${budget}s (${invalidCount} failed or invalid; last: ${lastFailure:-none})" \
+            '— proceeding to stop the VM'
+    else
+        Log "WARN: event log sizes did not stay unchanged for over ${quietWindow}s within ${budget}s (${validCount} valid," \
+            "${invalidCount} failed or invalid samples) — proceeding to stop the VM"
+    fi
     true
 }
 function ReleaseProbe () {
