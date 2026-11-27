@@ -1,148 +1,316 @@
-# Run as Administrator in the golden image BEFORE sealing
-# Supports all disk bus types: virtio (viostor), scsi (vioscsi), sata (storahci — inbox)
-# Installing all virtio-win drivers is safe — Windows loads only the one matching the presented hardware.
+# Golden-image setup, part 1 of 2. Run as Administrator BEFORE sealing; reboots at the end.
+# Afterwards run golden-image-post-reboot.ps1 and seal only if it passes.
+# Both VirtIO storage drivers are staged so the image boots on a virtio (viostor),
+# scsi (vioscsi) or sata (storahci, inbox) disk bus.
+# The page file is sized from this VM's RAM (RAM + 257 MB). validate-crash-settings.ps1 checks it
+# against the RAM of the VM it runs on, so VMs cloned from this image must not have more RAM than this VM.
 
-# ── Step 1: Download virtio-win ISO ───────────────────────────────────────
-New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-Write-Host "Downloading virtio-win ISO..."
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$wc = New-Object System.Net.WebClient
-$wc.DownloadFile(
-    "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso",
-    "C:\Temp\virtio-win.iso"
-)
-Write-Host "OK: Downloaded $(([math]::Round((Get-Item C:\Temp\virtio-win.iso).Length / 1MB, 0))) MB"
+# Fixed pagefile size in MB: physical RAM plus 257 MB, rounded once to a whole MB.
+# golden-image-post-reboot.ps1 checks the active pagefile against the same calculation.
+function Get-PagefileSizeMB ([int64]$memoryBytes) {
+    [int64][math]::Round(($memoryBytes + 257MB) / 1MB, 0)
+}
 
-$iso   = Mount-DiskImage -ImagePath C:\Temp\virtio-win.iso -PassThru
-$drive = ($iso | Get-Volume).DriveLetter
-Write-Host "OK: ISO mounted at ${drive}:\"
+# Windows Installer success codes: 0, 1641 (restart initiated) and 3010 (restart required);
+# pnputil uses 0 and 3010. A missing exit code is not treated as success.
+function Test-InstallerSuccess ([Nullable[int]]$exitCode) {
+    $null -ne $exitCode -and $exitCode -in 0, 1641, 3010
+}
 
-# ── Step 2: Install QEMU Guest Agent ──────────────────────────────────────
-Write-Host "`n--- Installing QEMU Guest Agent ---"
-Start-Process msiexec.exe -ArgumentList "/i ${drive}:\guest-agent\qemu-ga-x86_64.msi /quiet /norestart" -Wait
-Write-Host "OK: QEMU Guest Agent MSI installed"
+# Replaces any system-managed or other page file configuration with one fixed C:\pagefile.sys.
+# Automatic management is turned off through the documented read/write
+# Win32_ComputerSystem.AutomaticManagedPagefile property, then PagingFiles is set to exactly
+# this entry (other entries are dropped). No page file is deleted here: Windows applies the
+# configuration at the next boot.
+function Set-FixedPagefile ([int64]$sizeMB) {
+    $computer = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+    if ($computer.AutomaticManagedPagefile) {
+        Set-CimInstance -InputObject $computer -Property @{ AutomaticManagedPagefile = $false } -ErrorAction Stop
+        Write-Host 'OK: automatic pagefile management disabled'
+    }
+    $entry = 'C:\pagefile.sys {0} {0}' -f $sizeMB
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' -Name PagingFiles -Type MultiString -Value @($entry) -ErrorAction Stop
+    Write-Host "OK: PagingFiles set to '${entry}' (RAM + 257 MB), active after reboot"
+}
 
-# ── Step 3: Install VirtIO storage drivers ────────────────────────────────
-# All three drivers are installed — Windows activates only the one matching presented hardware.
-# viostor = virtio-blk (bus: virtio)
-# vioscsi = virtio-scsi (bus: scsi)
-# storahci = SATA/AHCI  (bus: sata) — inbox Windows driver, no install needed
-Write-Host "`n--- Installing VirtIO storage drivers ---"
-$driverPaths = @(
-    @{ Name = "viostor (VirtIO block)";  Pattern = "viostor\w11\amd64\viostor.inf" },
-    @{ Name = "vioscsi (VirtIO SCSI)";   Pattern = "vioscsi\w11\amd64\vioscsi.inf" }
-)
-foreach ($drv in $driverPaths) {
-    $inf = Get-Item "${drive}:\$($drv.Pattern)" -ErrorAction SilentlyContinue
-    if ($inf) {
-        pnputil /add-driver $inf.FullName /install | Out-Null
-        Write-Host "OK: $($drv.Name) installed from $($inf.FullName)"
-    } else {
-        Write-Host "WARN: $($drv.Name) inf not found at ${drive}:\$($drv.Pattern) — trying recursive search"
-        $inf = Get-ChildItem "${drive}:\" -Recurse -Filter "$($drv.Pattern.Split('\')[-1])" -ErrorAction SilentlyContinue |
-               Where-Object { $_.FullName -like "*amd64*" } | Select-Object -First 1
-        if ($inf) {
-            pnputil /add-driver $inf.FullName /install | Out-Null
-            Write-Host "OK: $($drv.Name) installed from $($inf.FullName)"
-        } else {
-            Write-Host "WARN: $($drv.Name) not found in ISO — skip"
-        }
+# Adds TLS 1.2 to the protocols this process already allows instead of replacing them.
+function Enable-TLS12 {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+}
+
+# Downloads an already resolved HTTPS URL to a file without following redirects: a redirect or any
+# status other than 200 throws instead of being followed, so the download cannot leave HTTPS.
+function Save-HTTPSdownload ([string]$url, [string]$path) {
+    if ($url -notlike 'https://*') { throw "not an HTTPS URL: ${url}" }
+    $request = [System.Net.HttpWebRequest]::Create($url)
+    $request.AllowAutoRedirect = $false
+    $response = $request.GetResponse()
+    try {
+        if ([int]$response.StatusCode -ne 200) { throw "HTTP $([int]$response.StatusCode) from ${url}" }
+        $file = [System.IO.File]::Create($path)
+        try { $response.GetResponseStream().CopyTo($file) } finally { $file.Close() }
+    } finally {
+        $response.Close()
     }
 }
-Write-Host "NOTE: storahci.sys (SATA) is an inbox Windows driver — no installation needed"
 
-# ── Step 4: Install pvpanic driver ────────────────────────────────────────
-# pvpanic signals BSOD to QEMU → enables on_crash=preserve (VM stays frozen for dump capture)
-Write-Host "`n--- Installing pvpanic driver ---"
-$pvpanicInf = Get-ChildItem "${drive}:\pvpanic" -Recurse -Filter "pvpanic.inf" `
-    -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like "*amd64*" } | Select-Object -First 1
-if ($pvpanicInf) {
-    pnputil /add-driver $pvpanicInf.FullName /install | Out-Null
-    Write-Host "OK: pvpanic.sys installed from $($pvpanicInf.FullName)"
-} else {
-    Write-Host "WARN: pvpanic.inf not found in ISO — pipeline will add pvpanic device via QMP at runtime"
+# Turns an HTTP(S) redirect location into the HTTPS URL on the same official host, or nothing when
+# it points elsewhere. Official download aliases may redirect to plain http://, which is never
+# requested: the location is parsed as a URI and only its path and query are reused over HTTPS.
+# A relative location, another scheme or host, user information, a non-default port or a fragment
+# is refused.
+function Get-HTTPSredirectTarget ([string]$location, [string]$officialHost) {
+    $uri = $location -as [uri]
+    if (-not $uri -or -not $uri.IsAbsoluteUri -or $uri.Scheme -notin 'http', 'https' -or $uri.Host -ne $officialHost -or
+        $uri.UserInfo -or -not $uri.IsDefaultPort -or $uri.Fragment) { return }
+    "https://${officialHost}$($uri.PathAndQuery)"
 }
 
-Dismount-DiskImage -ImagePath C:\Temp\virtio-win.iso
-Remove-Item C:\Temp\virtio-win.iso -Force
-Write-Host "OK: ISO unmounted and removed"
+# Returns the status code and Location header of one HTTPS HEAD request without following redirects.
+function Get-HTTPSresponseHead ([string]$url) {
+    $request = [System.Net.HttpWebRequest]::Create($url)
+    $request.Method = 'HEAD'
+    $request.AllowAutoRedirect = $false
+    try {
+        $response = $request.GetResponse()
+    } catch [System.Net.WebException] {
+        if (-not $_.Exception.Response) { throw }
+        $response = $_.Exception.Response
+    }
+    try {
+        [pscustomobject]@{ StatusCode = [int]$response.StatusCode; Location = $response.Headers['Location'] }
+    } finally {
+        $response.Close()
+    }
+}
 
-# ── Step 5: Verify and start QEMU Guest Agent ─────────────────────────────
+# Follows an official download alias hop by hop (at most five) and returns the final HTTPS URL on
+# the same host; a redirect to another host, a non-HTTPS start or an error status throws.
+function Resolve-OfficialHTTPS ([string]$url, [string]$officialHost) {
+    if ($url -notlike "https://${officialHost}/*") { throw "not an HTTPS URL on ${officialHost}: ${url}" }
+    foreach ($hop in 1..5) {
+        $head = Get-HTTPSresponseHead $url
+        if ($head.StatusCode -eq 200) { return $url }
+        if ($head.StatusCode -lt 300 -or $head.StatusCode -ge 400) { throw "HTTP $($head.StatusCode) from ${url}" }
+        $next = Get-HTTPSredirectTarget $head.Location $officialHost
+        if (-not $next) { throw "redirect from ${url} leaves ${officialHost}: $($head.Location)" }
+        $url = $next
+    }
+    throw "too many redirects from ${url}"
+}
+
+# The administrator's TEMP directory, where this run creates its own directory for the ISO.
+function Get-TempDirectory {
+    $env:TEMP
+}
+
+# Unmounts the ISO this run downloaded and removes it and the directory this run created for it.
+# Only that file and that directory are removed: a directory that still holds anything else is
+# reported and left in place. Returns a message when something is left, or nothing when all is gone.
+function Remove-ISOworkspace ([string]$dirPath, [string]$isoPath) {
+    try {
+        if ($isoPath -and (Test-Path -LiteralPath $isoPath)) {
+            $image = Get-DiskImage -ImagePath $isoPath -ErrorAction SilentlyContinue
+            if ($image -and $image.Attached) { Dismount-DiskImage -ImagePath $isoPath -ErrorAction Stop | Out-Null }
+            Remove-Item -LiteralPath $isoPath -Force -ErrorAction Stop
+        }
+        if (Get-ChildItem -LiteralPath $dirPath -Force -ErrorAction Stop) { return "${dirPath} is not empty and was left in place" }
+        Remove-Item -LiteralPath $dirPath -Force -ErrorAction Stop
+    } catch {
+        return "cannot unmount and remove the virtio-win ISO in ${dirPath}: $($_.Exception.Message)"
+    }
+    if (Test-Path -LiteralPath $dirPath) { return "${dirPath} still exists after its removal" }
+}
+
+# Removes the exact dedicated dump file an older preparation created, only when CrashControl names
+# no dedicated dump file and the path is a plain file (not a directory, link or other reparse
+# point). Returns 'absent', 'removed', or why the file is still there.
+function Remove-LegacyDedicatedDump ([string]$path, [string]$configuredTarget) {
+    if (-not (Test-Path -LiteralPath $path)) { return 'absent' }
+    if ($configuredTarget) { return "CrashControl still names DedicatedDumpFile '${configuredTarget}'" }
+    $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    if (-not $item -or $item.PSIsContainer -or "$($item.Attributes)" -like '*ReparsePoint*') { return 'it is not a plain file' }
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $path) { return 'it could not be removed (it may stay locked until the next reboot)' }
+    'removed'
+}
+
+# The memory size is read before any change: an unreadable, missing or non-positive size stops the
+# script before the ISO download, installations, registry writes, page file change or reboot.
+try {
+    $ramBytes = (Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory -as [int64]
+} catch {
+    Write-Error "FAIL: cannot read the physical memory size: $($_.Exception.Message)"
+    exit 1
+}
+if (-not ($ramBytes -gt 0)) {
+    Write-Error "FAIL: physical memory size is missing or not positive (TotalPhysicalMemory = '${ramBytes}')"
+    exit 1
+}
+$pagefileSizeMB = Get-PagefileSizeMB $ramBytes
+Write-Host "OK: physical memory read; the page file will be ${pagefileSizeMB} MB (RAM + 257 MB)"
+
+Enable-TLS12
+# virtio-win: the current official release behind the latest-virtio alias, with no hardcoded
+# version or digest. The alias is resolved hop by hop over HTTPS on fedorapeople.org (it
+# redirects to plain http://, which is never requested). No checksum or signature is published
+# for the ISO. It is downloaded into a new directory this run creates under the administrator's
+# TEMP directory and removed again before the reboot, so nothing of it is left for
+# golden-image-post-reboot.ps1 or the sealed image.
+$isoAliasURL = 'https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/latest-virtio/virtio-win.iso'
+try {
+    $isoURL = Resolve-OfficialHTTPS $isoAliasURL 'fedorapeople.org'
+} catch {
+    Write-Error "FAIL: cannot resolve the latest virtio-win ISO over HTTPS: $($_.Exception.Message)"
+    exit 1
+}
+$isoVersion = if ($isoURL -match '/virtio-win-([0-9][0-9.]*)\.iso$') { $Matches[1] } else { $null }
+Write-Host "Latest virtio-win ISO: ${isoURL} (version $(if ($isoVersion) { $isoVersion } else { 'not in the file name' }))"
+
+# Every step that needs the ISO runs inside this try block. The finally block always unmounts the
+# ISO and removes the directory this run created (and nothing that existed before); a failure in
+# the steps or in that cleanup stops the script here, before any registry write or reboot.
+$isoDir = $null
+$isoPath = $null
+$isoFailure = $null
+$isoCleanupProblem = $null
+try {
+    $tempDir = Get-TempDirectory
+    if (-not $tempDir -or -not (Test-Path -LiteralPath $tempDir -PathType Container)) { throw "TEMP ('${tempDir}') is not an existing directory" }
+    $newDir = Join-Path $tempDir "bsod-virtio-win-$((New-Guid).Guid)"
+    New-Item -ItemType Directory -Path $newDir -ErrorAction Stop | Out-Null
+    $isoDir = $newDir
+    $isoPath = Join-Path $isoDir 'virtio-win.iso'
+    Write-Host "Downloading ${isoURL} to ${isoPath} ..."
+    try { Save-HTTPSdownload $isoURL $isoPath } catch { throw "the latest virtio-win ISO could not be downloaded: $($_.Exception.Message)" }
+    Write-Host 'OK: virtio-win ISO downloaded'
+    try {
+        $iso = Mount-DiskImage -ImagePath $isoPath -PassThru -ErrorAction Stop
+        $drive = ($iso | Get-Volume -ErrorAction Stop).DriveLetter
+    } catch {
+        throw "cannot mount ${isoPath}: $($_.Exception.Message)"
+    }
+    if (-not $drive) { throw "${isoPath} is mounted without a drive letter" }
+    Write-Host "OK: ISO mounted at ${drive}:\"
+
+    Write-Host "`n--- Installing QEMU Guest Agent ---"
+    $msiProcess = Start-Process msiexec.exe -ArgumentList "/i ${drive}:\guest-agent\qemu-ga-x86_64.msi /quiet /norestart" -Wait -PassThru
+    if (Test-InstallerSuccess $msiProcess.ExitCode) {
+        Write-Host "OK: QEMU Guest Agent MSI installed (exit code $($msiProcess.ExitCode))"
+    } else {
+        Write-Host "WARN: QEMU Guest Agent MSI exited with code $($msiProcess.ExitCode); the service check below decides"
+    }
+
+    # A driver missing from its expected path is searched for recursively; still missing is a warning.
+    Write-Host "`n--- Installing VirtIO storage drivers ---"
+    $storageDrivers = @(
+        @{ Name = 'viostor (VirtIO block)'; Inf = 'viostor\w11\amd64\viostor.inf' },
+        @{ Name = 'vioscsi (VirtIO SCSI)';  Inf = 'vioscsi\w11\amd64\vioscsi.inf' }
+    )
+    foreach ($drv in $storageDrivers) {
+        $inf = Get-Item "${drive}:\$($drv.Inf)" -ErrorAction SilentlyContinue
+        if (-not $inf) {
+            Write-Host "WARN: $($drv.Name) inf not found at ${drive}:\$($drv.Inf) - trying recursive search"
+            $inf = Get-ChildItem "${drive}:\" -Recurse -Filter ($drv.Inf -split '\\')[-1] -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -like '*amd64*' } | Select-Object -First 1
+        }
+        if ($inf) {
+            pnputil /add-driver $inf.FullName /install | Out-Null
+            if (Test-InstallerSuccess $LASTEXITCODE) {
+                Write-Host "OK: $($drv.Name) installed from $($inf.FullName)"
+            } else {
+                Write-Host "WARN: pnputil exited with code ${LASTEXITCODE} for $($inf.FullName) - golden-image-post-reboot.ps1 checks the driver store"
+            }
+        } else {
+            Write-Host "WARN: $($drv.Name) not found in ISO - skip"
+        }
+    }
+    Write-Host 'NOTE: storahci.sys (SATA) is an inbox Windows driver - no installation needed'
+} catch {
+    $isoFailure = $_.Exception.Message
+} finally {
+    if ($isoDir) { $isoCleanupProblem = Remove-ISOworkspace $isoDir $isoPath }
+}
+if ($isoFailure) { Write-Error "FAIL: ${isoFailure}" }
+if ($isoCleanupProblem) { Write-Error "FAIL: ${isoCleanupProblem}" }
+if ($isoFailure -or $isoCleanupProblem) {
+    exit 1
+}
+Write-Host "OK: ISO unmounted and ${isoDir} removed"
+
+# pvpanic: no guest pvpanic driver is installed here (golden-image-post-reboot.ps1 does not check
+# one). The pipeline entry script attempts, best effort and non-fatal, to hot-add the pvpanic
+# device to the running VM through the QEMU monitor
+# (`virsh qemu-monitor-command --hmp 'device_add pvpanic,id=pvpanic0'`):
+# src/scripts/crash-injector/trigger-bsod-intentional.sh (a separately proposed pipeline runner may
+# take over that step). Whether the KubeVirt Panicked event is raised without a guest driver has
+# not been verified.
+# Windows boot-recovery settings (boot-status policy, automatic recovery, recovery environment) are
+# intentionally left at their Windows defaults: the intended flow does not restart a VM after a
+# simulated crash. The current src/scripts/host/watch-crash.sh still starts the VM again unless it
+# runs with --no-restart (a watcher change is planned separately); a restarted VM is not verified.
+
 Write-Host "`n--- Verifying QEMU Guest Agent ---"
 $svc = Get-Service QEMU-GA -ErrorAction SilentlyContinue
 if (-not $svc) {
-    Write-Error "FAIL: QEMU-GA service not installed — abort"
+    Write-Error 'FAIL: QEMU-GA service not installed - abort'
     exit 1
 }
 Set-Service QEMU-GA -StartupType Automatic
 if ($svc.Status -ne 'Running') {
-    Write-Host "QEMU-GA is stopped — starting..."
+    Write-Host 'QEMU-GA is stopped - starting...'
     Start-Service QEMU-GA -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
-    $svc.Refresh()
+    $svc = Get-Service QEMU-GA -ErrorAction SilentlyContinue
 }
-if ($svc.Status -eq 'Running') {
-    Write-Host "OK: QEMU-GA is Running and set to Automatic"
-} else {
-    Write-Error "FAIL: QEMU-GA could not be started (Status: $($svc.Status)) — abort"
+if (-not $svc -or $svc.Status -ne 'Running') {
+    Write-Error "FAIL: QEMU-GA could not be started (Status: $(if ($svc) { $svc.Status } else { 'not installed' })) - abort"
+    exit 1
+}
+Write-Host 'OK: QEMU-GA is Running and set to Automatic'
+
+# CrashDumpEnabled=7 is the Automatic memory dump. DedicatedDumpFile must be absent
+# (golden-image policy, see virtio-win issue #1629). A failed write stops the script before the
+# page file change and the reboot; an absent DedicatedDumpFile value is left alone.
+Write-Host "`n--- Setting crash dump registry ---"
+$cc = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
+try {
+    Set-ItemProperty -Path $cc -Name CrashDumpEnabled     -Value 7                         -Type DWord        -ErrorAction Stop
+    Set-ItemProperty -Path $cc -Name AutoReboot           -Value 0                         -Type DWord        -ErrorAction Stop
+    Set-ItemProperty -Path $cc -Name AlwaysKeepMemoryDump -Value 1                         -Type DWord        -ErrorAction Stop
+    Set-ItemProperty -Path $cc -Name Overwrite            -Value 1                         -Type DWord        -ErrorAction Stop
+    Set-ItemProperty -Path $cc -Name LogEvent             -Value 1                         -Type DWord        -ErrorAction Stop
+    Set-ItemProperty -Path $cc -Name DumpFile             -Value '%SystemRoot%\MEMORY.DMP' -Type ExpandString -ErrorAction Stop
+    if (Get-ItemProperty -Path $cc -Name DedicatedDumpFile -ErrorAction SilentlyContinue) {
+        Remove-ItemProperty -Path $cc -Name DedicatedDumpFile -ErrorAction Stop
+    }
+} catch {
+    Write-Error "FAIL: crash dump registry write failed: $($_.Exception.Message)"
+    exit 1
+}
+Write-Host 'OK: Crash dump registry set (CrashDumpEnabled=7, no DedicatedDumpFile)'
+# The dedicated dump file older preparations created at this fixed path is no longer used once
+# DedicatedDumpFile is unset. Only that exact file is removed (see Remove-LegacyDedicatedDump);
+# Windows can keep it locked until the reboot, and golden-image-post-reboot.ps1 then removes it or
+# refuses to seal.
+$legacyDumpPath = 'C:\DedicatedDump.sys'
+$configuredDump = (Get-ItemProperty -Path $cc -Name DedicatedDumpFile -ErrorAction SilentlyContinue).DedicatedDumpFile
+$legacyDumpResult = Remove-LegacyDedicatedDump $legacyDumpPath $configuredDump
+if ($legacyDumpResult -eq 'removed') {
+    Write-Host "OK: removed ${legacyDumpPath} from an older preparation"
+} elseif ($legacyDumpResult -ne 'absent') {
+    Write-Host "WARN: ${legacyDumpPath} from an older preparation was not removed: ${legacyDumpResult} - golden-image-post-reboot.ps1 checks it after the reboot"
+}
+
+# Fixed-size C:\pagefile.sys of RAM + 257 MB (computed above) with automatic management off,
+# active after the reboot; golden-image-post-reboot.ps1 checks this size.
+Write-Host "`n--- Configuring pagefile.sys ---"
+try {
+    Set-FixedPagefile $pagefileSizeMB
+} catch {
+    Write-Error "FAIL: pagefile configuration failed: $($_.Exception.Message)"
     exit 1
 }
 
-# ── Step 6: Set crash dump registry parameters ────────────────────────────
-Write-Host "`n--- Setting crash dump registry ---"
-$cc = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'
-Set-ItemProperty -Path $cc -Name CrashDumpEnabled     -Value 7                         -Type DWord
-Set-ItemProperty -Path $cc -Name AutoReboot            -Value 0                         -Type DWord
-Set-ItemProperty -Path $cc -Name AlwaysKeepMemoryDump  -Value 1                         -Type DWord
-Set-ItemProperty -Path $cc -Name Overwrite             -Value 1                         -Type DWord
-Set-ItemProperty -Path $cc -Name LogEvent              -Value 1                         -Type DWord
-Set-ItemProperty -Path $cc -Name DumpFile              -Value '%SystemRoot%\MEMORY.DMP' -Type ExpandString
-Set-ItemProperty -Path $cc -Name MinidumpDir           -Value '%SystemRoot%\Minidump'   -Type ExpandString
-Set-ItemProperty -Path $cc -Name DedicatedDumpFile     -Value 'C:\DedicatedDump.sys'    -Type ExpandString
-Write-Host "OK: Crash dump registry set"
-
-# ── Step 8: Pre-allocate DedicatedDump.sys (RAM + 1MB) ───────────────────
-# Allows Windows crash dump handler to write without pagefile on VirtIO.
-# On SATA (storahci.sys) this file receives real crash dump content.
-Write-Host "`n--- Pre-allocating DedicatedDump.sys ---"
-$ramBytes = (Get-CimInstance -ClassName Win32_ComputerSystem).TotalPhysicalMemory
-$dumpSize = $ramBytes + (1024 * 1024)
-if (-not (Test-Path 'C:\DedicatedDump.sys')) {
-    fsutil file createnew C:\DedicatedDump.sys $dumpSize
-    Write-Host "OK: Created DedicatedDump.sys = $([math]::Round($dumpSize / 1GB, 1)) GB"
-} else {
-    Write-Host "OK: DedicatedDump.sys already exists = $([math]::Round((Get-Item 'C:\DedicatedDump.sys').Length / 1GB, 1)) GB"
-}
-
-# ── Step 9: Pre-allocate pagefile.sys (4GB) and disable automatic management
-# Minidump requires an active pagefile. Pre-create so kernel loads it at next boot.
-# On SATA (storahci.sys) with active pagefile, Minidump is written on BSOD.
-Write-Host "`n--- Pre-allocating pagefile.sys ---"
-$mm = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management'
-Set-ItemProperty -Path $mm -Name AutomaticManagedPagefile -Value 0 -Type DWord
-
-$pagefilePath = 'C:\pagefile.sys'
-$pagefileSize = 4294967296  # 4GB
-if (-not (Test-Path $pagefilePath)) {
-    fsutil file createnew $pagefilePath $pagefileSize
-    Write-Host "OK: Created pagefile.sys = 4 GB"
-} else {
-    Write-Host "OK: pagefile.sys already exists ($([math]::Round((Get-Item $pagefilePath -Force).Length / 1GB, 1)) GB)"
-}
-
-$existing = Get-CimInstance Win32_PageFileSetting -Filter "Name='C:\\pagefile.sys'" -ErrorAction SilentlyContinue
-if (-not $existing) {
-    New-CimInstance -ClassName Win32_PageFileSetting -Property @{
-        Name        = 'C:\pagefile.sys'
-        InitialSize = 4096
-        MaximumSize = 4096
-    }
-    Write-Host "OK: pagefile.sys registered via WMI (4096MB fixed)"
-} else {
-    Write-Host "OK: pagefile.sys already registered in WMI"
-}
-Write-Host "OK: Pagefile pre-allocation complete — active after reboot"
-
-Write-Host "`n=== All steps complete. Rebooting in 5 seconds... ==="
-Start-Sleep -Seconds 5
+Write-Host "`n=== All steps complete. Rebooting now... ==="
 Restart-Computer -Force

@@ -1,0 +1,86 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: ${VM_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  dataVolumeTemplates:
+  - metadata:
+      annotations:
+        descheduler.alpha.kubernetes.io/evict: "true"
+      name: ${VM_NAME}-root-disk
+    spec:
+      pvc:
+        accessModes:
+        - ReadWriteOnce
+        storageClassName: ${STORAGE_CLASS}
+        volumeMode: Block
+        resources:
+          requests:
+            storage: ${STORAGE_SIZE}
+      source:
+        pvc:
+          name: ${SOURCE_DV}
+          namespace: ${NAMESPACE}
+  runStrategy: Manual
+  template:
+    metadata:
+      labels:
+        kubevirt.io/vm: ${VM_NAME}
+    spec:
+      domain:
+        cpu:
+          cores: 8
+          sockets: 1
+          threads: 1
+        memory:
+          guest: 16Gi
+        devices:
+          disks:
+          - bootOrder: 1
+            disk:
+              bus: virtio
+            name: ${VM_NAME}-root-disk
+          - disk:
+              bus: virtio
+            name: cloudinitdisk
+          interfaces:
+          - masquerade: {}
+            name: nic-0
+        features:
+          acpi: {}
+          hyperv:
+            relaxed: {}
+            vapic: {}
+            spinlocks:
+              spinlocks: 8191
+          smm: {}
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: false
+        resources:
+          requests:
+            memory: 16Gi
+          limits:
+            memory: 16Gi
+      networks:
+      - name: nic-0
+        pod: {}
+      volumes:
+      - dataVolume:
+          name: ${VM_NAME}-root-disk
+        name: ${VM_NAME}-root-disk
+      - cloudInitNoCloud:
+          userData: |
+            #cloud-config
+            runcmd:
+              - powershell -Command "reg add 'HKLM\SYSTEM\CurrentControlSet\Control\CrashControl' /v CrashDumpEnabled /t REG_DWORD /d 1 /f"
+              - powershell -Command "reg add 'HKLM\SYSTEM\CurrentControlSet\Control\CrashControl' /v DumpFile /t REG_SZ /d C:\MEMORY.DMP /f"
+              - powershell -Command "reg add 'HKLM\SYSTEM\CurrentControlSet\Control\CrashControl' /v Overwrite /t REG_DWORD /d 1 /f"
+              - powershell -Command "reg add 'HKLM\SYSTEM\CurrentControlSet\Control\CrashControl' /v AutoReboot /t REG_DWORD /d 0 /f"
+        name: cloudinitdisk
+      - memoryDump:
+          claimName: ${VM_NAME}-memdump
+          hotpluggable: true
+        name: ${VM_NAME}-memdump

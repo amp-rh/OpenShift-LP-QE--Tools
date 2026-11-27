@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -88,12 +89,15 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["decision"], "capture")
 
-    def test_running_domain_without_pvpanic_is_ambiguous(self):
+    def test_running_domain_after_guest_agent_loss_is_captured(self):
         result = run_helper(
             "decision", "--misses", "2", "--threshold", "2", "--domstate", "running",
             "--vmi-phase", "Running", "--pod-present",
         )
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        decision = json.loads(result.stdout)
+        self.assertEqual(decision["decision"], "capture")
+        self.assertEqual(decision["reason"], "qga-threshold-domstate-running")
 
     def test_write_progress_then_quiescence_completes(self):
         sequence = (FIXTURES / "domstats-progress.json").read_text(encoding="utf-8")
@@ -101,11 +105,20 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["reason"], "progress-then-quiescence")
 
-    def test_no_progress_and_missing_statistics_fail(self):
-        for fixture, reason in (("domstats-no-progress.json", "no-progress-timeout"), ("domstats-missing.json", "statistics-unavailable")):
-            result = run_helper("progress-sequence", "--device", "vda", stdin=(FIXTURES / fixture).read_text(encoding="utf-8"))
-            self.assertNotEqual(result.returncode, 0)
-            self.assertEqual(json.loads(result.stdout)["reason"], reason)
+    def test_no_progress_at_baseline_completes_but_missing_statistics_fail(self):
+        result = run_helper(
+            "progress-sequence", "--device", "vda",
+            stdin=(FIXTURES / "domstats-no-progress.json").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["reason"], "pre-quiescent-at-baseline")
+
+        result = run_helper(
+            "progress-sequence", "--device", "vda",
+            stdin=(FIXTURES / "domstats-missing.json").read_text(encoding="utf-8"),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout)["reason"], "statistics-unavailable")
 
     def test_structural_artifact_validation(self):
         samples = {"screenshot": png_bytes(), "memory": elf_bytes(), "dump": pagedu64_bytes(), "evtx": evtx_bytes()}
@@ -142,11 +155,18 @@ class ReliabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             out = Path(temporary)
             (out / "MEMORY.DMP").write_bytes(pagedu64_bytes())
+            (out / "vm-memory.elf").write_bytes(elf_bytes())
             (out / "System.evtx").write_bytes(evtx_bytes())
             (out / "recovery.log").write_text("fixture\n", encoding="utf-8")
             (out / "parse-dump-header.json").write_text('{"ok":true}\n', encoding="utf-8")
             (out / "events.json").write_text('{"ok":true}\n', encoding="utf-8")
-            (out / "checksums.sha256").write_text("fixture  MEMORY.DMP\n", encoding="utf-8")
+            artifact_names = ("MEMORY.DMP", "vm-memory.elf", "System.evtx", "parse-dump-header.json", "events.json")
+
+            def write_manifest():
+                rows = [f"{hashlib.sha256((out / name).read_bytes()).hexdigest()}  {name}\n" for name in artifact_names]
+                (out / "checksums.sha256").write_text("".join(rows), encoding="utf-8")
+
+            write_manifest()
             errors = out / "stage-errors.jsonl"
             errors.write_text("", encoding="utf-8")
             result = run_helper(
@@ -157,7 +177,16 @@ class ReliabilityTests(unittest.TestCase):
             summary = json.loads((out / "evidence-summary.json").read_text(encoding="utf-8"))
             self.assertTrue(summary["ok"])
             self.assertNotIn("screenshot", summary["missingRequiredArtifactTypes"])
+            (out / "events.json").write_text('{"ok":true,"extra":1}\n', encoding="utf-8")
+            tampered = run_helper(
+                "write-summary", "--out", str(out), "--stage-errors", str(errors),
+                "--mode", "rhov-snapshot-recovery", "--vm", "fixture-vm", "--namespace", "fixture-ns",
+            )
+            self.assertNotEqual(tampered.returncode, 0)
+            self.assertIn("manifest-hash-mismatch", tampered.stdout)
+            (out / "events.json").write_text('{"ok":true}\n', encoding="utf-8")
             (out / "parse-dump-header.json").write_text('{"ok":false}\n', encoding="utf-8")
+            write_manifest()
             failed = run_helper(
                 "write-summary", "--out", str(out), "--stage-errors", str(errors),
                 "--mode", "rhov-snapshot-recovery", "--vm", "fixture-vm", "--namespace", "fixture-ns",

@@ -1,0 +1,22 @@
+apiVersion: cdi.kubevirt.io/v1beta1
+kind: DataVolume
+metadata:
+  name: ${VM_NAME}-root-disk
+  namespace: ${NAMESPACE}
+  annotations:
+    cdi.kubevirt.io/allowClaimAdoption: "true"
+    cdi.kubevirt.io/cloneType: csi-clone
+    descheduler.alpha.kubernetes.io/evict: "true"
+spec:
+  pvc:
+    accessModes:
+    - ReadWriteOnce
+    storageClassName: ${STORAGE_CLASS}
+    volumeMode: Block
+    resources:
+      requests:
+        storage: ${STORAGE_SIZE}
+  source:
+    pvc:
+      name: ${SOURCE_DV}
+      namespace: ${NAMESPACE}
